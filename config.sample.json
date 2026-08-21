@@ -1,0 +1,9 @@
+{
+  "mqtt_url": "mqtt://10.0.0.1:1883",
+  "mqtt_topics": ["windows/notification"],
+  "mqtt_user": "",
+  "mqtt_pass": "",
+  "log_level": "INFO",
+  "log_max_size_mb": 5,
+  "log_max_files": 3
+}

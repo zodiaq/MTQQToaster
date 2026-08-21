@@ -1,0 +1,54 @@
+#include <windows.h>
+#include "resource.h"
+
+// アイコン（トレイ用）
+IDI_TRAYICON ICON "tray.ico"
+
+// 必要なら複数サイズ入りの .ico を1つ用意する
+// 16x16 / 32x32 が入っていると綺麗
+
+// String table for Japanese
+LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
+IDR_TRAYMENU MENU
+BEGIN
+	POPUP ""
+	BEGIN
+		MENUITEM "スタートアップに登録", ID_STARTUP
+		MENUITEM SEPARATOR
+		MENUITEM "終了", ID_EXIT
+	END
+END
+
+// String table for English
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+IDS_APP_NAME "MQTT Toast"
+END
+
+IDR_TRAYMENU MENU
+BEGIN
+	POPUP ""
+	BEGIN
+		MENUITEM "Add to Startup", ID_STARTUP
+		MENUITEM SEPARATOR
+		MENUITEM "Exit", ID_EXIT
+	END
+END
+
+// Version information
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    1, 0, 0, 0
+PRODUCTVERSION 1, 0, 0, 0
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		// English (United States)
+		BLOCK "040904b0"
+		BEGIN
+			VALUE "FileDescription", "MQTT Toast Notifier"
+			VALUE "ProductName", "MQTT Toast"
+			VALUE "FileVersion", "1.0.0"
+		END
+	END
+END
