@@ -1,3 +1,4 @@
+#include "ui_text.h"
 #include "app_logic.h"
 #include "resource.h"
 #include <fstream>
@@ -28,7 +29,7 @@ using namespace Windows::UI::Notifications;
 
 #define WM_TRAYICON (WM_USER + 1)
 
-static bool HasPackageIdentity() noexcept
+bool HasPackageIdentity() noexcept
 {
     UINT32 length = 0;
     return GetCurrentPackageFullName(&length, nullptr) == ERROR_INSUFFICIENT_BUFFER;
@@ -573,6 +574,7 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
             POINT cursor{};
             GetCursorPos(&cursor);
+            if (tray->OpenMenu(cursor)) return 0;
             const HMENU menu = LoadMenuW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDR_TRAYMENU));
             if (!menu) return 0;
             const HMENU popup = GetSubMenu(menu, 0);
@@ -581,9 +583,9 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 return 0;
             }
 
-            if (HasPackageIdentity()) {
-                ModifyMenuW(popup, ID_STARTUP, MF_BYCOMMAND | MF_STRING, ID_STARTUP,
-                            L"Windowsのスタートアップ設定...");
+            if (!LocalizeTrayMenu(popup, HasPackageIdentity())) {
+                DestroyMenu(menu);
+                return 0;
             }
             CheckMenuItem(popup, ID_STARTUP,
                           MF_BYCOMMAND | (IsStartupRegistered() ? MF_CHECKED : MF_UNCHECKED));
@@ -603,8 +605,14 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+bool TrayIcon::OpenMenu(POINT point) const noexcept {
+    try { return menuHandler_ && menuHandler_(point); }
+    catch (...) { spdlog::warn("Modern tray menu unavailable; using native menu."); return false; }
+}
+
 bool TrayIcon::Create(HINSTANCE hInstance, std::function<void()> settingsHandler,
-                      std::function<void()> exitHandler) {
+                      std::function<void()> exitHandler, std::function<bool(POINT)> menuHandler) {
+    menuHandler_ = std::move(menuHandler);
     settingsHandler_ = std::move(settingsHandler);
     exitHandler_ = std::move(exitHandler);
     instance_ = hInstance;

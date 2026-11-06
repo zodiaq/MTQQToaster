@@ -6,7 +6,11 @@
 
 ## 対応環境
 
-Windows 10 version 1809以降／Windows 11のx64向けトレイ常駐EXEです。Win32とC++/WinRTを使用し、EXEの直接実行とMSIXパッケージ作成に対応します。UWP、WinUI、Windows App SDK、IDLは使用しません。署名と導入条件は[MSIX手順](docs/development/msix.md)を参照してください。
+Windows 10 version 1903以降／Windows 11のx64向けトレイ常駐EXEです。Win32とC++/WinRTを使用し、EXEの直接実行とMSIXパッケージ作成に対応します。設定画面はOS内蔵のUWP XAML（Windows.UI.Xaml）をXAML Islandsで利用します。アプリ自体はWin32のままで、WinUI 3、Windows App SDK、.NET、IDLは使用しません。署名と導入条件は[MSIX手順](docs/development/msix.md)を参照してください。
+
+設定画面とトレイメニューの表示言語はWindowsの表示言語に合わせ、日本語または英語（日本語以外のフォールバック）です。Windows 11ではDWMによる一体型ヘッダーを使用し、Windows 10とハイコントラスト時は標準枠を使用します。
+
+設定画面は固定サイズでリサイズ・最小化・最大化を行わず、全体スクロールなしで表示します。小さい作業領域では全体を縮小します。購読一覧は末尾の「<新規>」を選んで「更新」で追加し、画像欄にはサムネイルを表示します。トレイメニューもOS内蔵XAMLを使い、明暗テーマとアイコンに対応します。Windows 11ではDWMで角丸を指定し、ハイコントラスト時・初期化失敗時は標準メニューへ戻します。
 
 ## 通知
 

@@ -2,7 +2,7 @@
 
 [ドキュメント一覧](../README.md) · [ビルド手順](build.md)
 
-既存のWin32 EXEをWindows SDKのMakeAppxでパッケージ化します。UWP、WinUI、Windows App SDKへの移行は不要です。Windows 10 version 1809以降／Windows 11のx64が対象です。
+既存のWin32 EXEをWindows SDKのMakeAppxでパッケージ化します。アプリをUWPへ移行せず、設定画面にOS内蔵UWP XAMLを使用します。WinUI 3とWindows App SDKは不要です。Windows 10 version 1903以降／Windows 11のx64が対象です。
 
 ## 作成
 

@@ -23,7 +23,7 @@ clean sessionで接続し、topicごとにQoS 0で購読してSUBACKを確認す
 
 ## TLSと証明書
 
-対象OSはWindows 10 version 1809以降／Windows 11。`SCH_CREDENTIALS`でTLS 1.2以降を許可し、古いSSL／TLSを無効にする。暗号処理はSchannel、証明書検証はWindows CryptoAPIを利用する。[SCH_CREDENTIALS](https://learn.microsoft.com/en-us/windows/win32/api/schannel/ns-schannel-sch_credentials)
+対象OSはWindows 10 version 1903以降／Windows 11。`SCH_CREDENTIALS`でTLS 1.2以降を許可し、古いSSL／TLSを無効にする。暗号処理はSchannel、証明書検証はWindows CryptoAPIを利用する。[SCH_CREDENTIALS](https://learn.microsoft.com/en-us/windows/win32/api/schannel/ns-schannel-sch_credentials)
 
 ハンドシェイク後、Windowsの信頼ストアでチェーン・サーバー用途・有効期限・失効状態を検証し、SSLポリシーで接続先名を確認する。検証完了前にはMQTTデータや認証情報を送れない。証明書検証を無効にするオプションは設けない。Schannel内部の自動検証に代えて明示検証する構成であり、検証省略ではない。
 

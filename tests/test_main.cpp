@@ -2,10 +2,55 @@
 #include <fstream>
 #include <limits>
 #include "app_logic.h"
+#include "ui_text.h"
 #include "../resources/resource.h"
 
 // テスト用のダミーグローバルフラグ
 std::atomic<bool> g_running{ true };
+
+TEST(UiLanguageTest, JapaneseAndEnglishHaveEveryString) {
+    const auto ja = MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT);
+    const auto en = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+    for (int i = 0; i < static_cast<int>(UiString::Count); ++i) {
+        const auto id = static_cast<UiString>(i);
+        EXPECT_NE(std::wstring_view(UiText(id, ja)), L"");
+        EXPECT_NE(std::wstring_view(UiText(id, en)), L"");
+    }
+    EXPECT_STREQ(UiText(UiString::Save, ja), L"保存");
+    EXPECT_STREQ(UiText(UiString::Save, en), L"Save");
+    EXPECT_STREQ(UiText(UiString::MenuSettings, MAKELANGID(LANG_FRENCH, SUBLANG_DEFAULT)), L"Settings...");
+    EXPECT_STREQ(UiText(UiString::StartupSettings, en), L"Windows startup settings...");
+}
+
+TEST(UiLanguageTest, ValidationUsesThreadDisplayLanguage) {
+    const auto original = GetThreadUILanguage();
+    struct Restore { LANGID language; ~Restore() { SetThreadUILanguage(language); } } restore{original};
+    SetThreadUILanguage(MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT));
+    EXPECT_EQ(LocalizeMqttError("Invalid MQTT port"), L"ポートは1～65535の整数で指定してください。");
+    SetThreadUILanguage(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US));
+    EXPECT_EQ(LocalizeMqttError("Invalid MQTT port"), L"Invalid MQTT port");
+}
+
+TEST(UiLanguageTest, TrayMenuMatchesLanguageAndPackageMode) {
+    const HMENU menu = CreatePopupMenu();
+    ASSERT_NE(menu, nullptr);
+    struct Cleanup { HMENU value; ~Cleanup() { DestroyMenu(value); } } cleanup{menu};
+    ASSERT_TRUE(AppendMenuW(menu, MF_STRING, ID_SETTINGS, L""));
+    ASSERT_TRUE(AppendMenuW(menu, MF_STRING, ID_STARTUP, L""));
+    ASSERT_TRUE(AppendMenuW(menu, MF_STRING, ID_EXIT, L""));
+    for (auto language : {MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT), MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)}) {
+        for (bool packaged : {false, true}) {
+            ASSERT_TRUE(LocalizeTrayMenu(menu, packaged, language));
+            wchar_t text[128]{};
+            ASSERT_GT(GetMenuStringW(menu, ID_SETTINGS, text, 128, MF_BYCOMMAND), 0);
+            EXPECT_STREQ(text, UiText(UiString::MenuSettings, language));
+            ASSERT_GT(GetMenuStringW(menu, ID_STARTUP, text, 128, MF_BYCOMMAND), 0);
+            EXPECT_STREQ(text, UiText(packaged ? UiString::StartupSettings : UiString::Startup, language));
+            ASSERT_GT(GetMenuStringW(menu, ID_EXIT, text, 128, MF_BYCOMMAND), 0);
+            EXPECT_STREQ(text, UiText(UiString::Exit, language));
+        }
+    }
+}
 
 TEST(TrayIconTest, ThemeResourcesLoadAtTraySizes) {
     // Load the built application's resources without starting MQTT or registering a tray icon.

@@ -5,6 +5,7 @@
 現在の機能は[現行仕様](../../SPECIFICATION.md)を参照してください。ここには理由と経緯を残します。
 
 - [0001：coreMQTTとSchannelの採用](0001-coremqtt-schannel.md) — 採用済み。既存資料から移した記録。
+- [0002：OS内蔵XAMLによる設定画面](0002-os-xaml-settings.md) — 採用。静的CRTを維持したUI変更と配布検証の制約。
 
 ## 記録の追加
 

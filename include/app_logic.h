@@ -83,7 +83,8 @@ public:
     NOTIFYICONDATAW nid = { 0 };
 
     bool Create(HINSTANCE hInstance, std::function<void()> settingsHandler,
-                std::function<void()> exitHandler);
+                std::function<void()> exitHandler, std::function<bool(POINT)> menuHandler = {});
+    bool OpenMenu(POINT point) const noexcept;
     void Destroy();
     void OpenSettings() const noexcept;
     void ExitApplication() const noexcept;
@@ -92,10 +93,12 @@ public:
 private:
     std::function<void()> settingsHandler_;
     std::function<void()> exitHandler_;
+    std::function<bool(POINT)> menuHandler_;
     HICON icon_ = nullptr;
     HINSTANCE instance_ = nullptr;
     int iconResource_ = 0;
 };
 
 bool IsStartupRegistered();
+bool HasPackageIdentity() noexcept;
 void ToggleStartupRegistration();

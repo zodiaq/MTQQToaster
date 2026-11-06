@@ -1,3 +1,4 @@
+#include "ui_text.h"
 #include "app_logic.h"
 #include "settings_ui.h"
 #include "resource.h"
@@ -61,15 +62,15 @@ bool SaveSettings(const AppConfig& requestedConfig,
     AppConfig config = requestedConfig;
     try { ValidateMqttConfig(config); }
     catch (const std::exception& ex) {
-        error = winrt::to_hstring(ex.what());
+        error = LocalizeMqttError(ex.what());
         return false;
     }
     if (config.topics.empty()) {
-        error = L"トピックを1件以上入力してください。";
+        error = UiText(UiString::NeedTopic);
         return false;
     }
     if (selectedImages.size() != config.topics.size()) {
-        error = L"topicの画像設定が不整合です。設定画面を開き直してください。";
+        error = UiText(UiString::ImageMismatch);
         return false;
     }
 
@@ -79,7 +80,7 @@ bool SaveSettings(const AppConfig& requestedConfig,
         std::string copiedFile;
         if (!CopyToastImage(g_appDataPaths.configDirectory, selectedImages[i], copiedFile)) {
             RemoveUnusedToastImages(g_appDataPaths.configDirectory, activeConfig.topics);
-            error = L"画像を設定フォルダーへコピーできませんでした。PNG、JPEG、GIFを選択してください。";
+            error = UiText(UiString::ImageCopyFailed);
             return false;
         }
         config.topics[i].image = copiedFile;
@@ -87,7 +88,7 @@ bool SaveSettings(const AppConfig& requestedConfig,
 
     if (!SaveConfig(g_appDataPaths.configPath, config)) {
         RemoveUnusedToastImages(g_appDataPaths.configDirectory, activeConfig.topics);
-        error = L"設定を保存できませんでした。";
+        error = UiText(UiString::SaveFailed);
         return false;
     }
 
@@ -107,8 +108,13 @@ bool SaveSettings(const AppConfig& requestedConfig,
 constexpr UINT WM_CONFIG_CHANGED = WM_APP + 2;
 std::atomic<bool> g_watcherStopping{false};
 
-Windows::Foundation::IAsyncAction StartConfigWatcherAsync(std::wstring folderPath, DWORD ownerThread)
+Windows::Foundation::IAsyncAction StartConfigWatcherAsync(std::wstring folderPath, DWORD ownerThread,
+    std::shared_ptr<std::atomic_bool> finished)
 {
+    struct Completion {
+        std::shared_ptr<std::atomic_bool> value;
+        ~Completion() { value->store(true, std::memory_order_release); }
+    } completion{std::move(finished)};
     try {
         const StorageFolder folder = co_await StorageFolder::GetFolderFromPathAsync(folderPath);
         if (g_watcherStopping.load()) co_return;
@@ -218,12 +224,37 @@ std::unique_ptr<std::jthread> g_mqttThread;
 HINSTANCE g_instance = nullptr;
 bool g_uiSmokeTest = false;
 bool g_uiPreview = false;
+bool g_menuPreview = false;
+bool g_traySmoke = false;
+bool g_trayLiveTest = false;
+HWND g_trayReentryTarget = nullptr;
+bool g_trayReentered = false;
+LRESULT CALLBACK TrayReentryHook(int code, WPARAM wParam, LPARAM lParam) noexcept
+{
+    if (code == HCBT_CREATEWND && g_trayReentryTarget && !g_trayReentered) {
+        g_trayReentered = true;
+        SendMessageW(g_trayReentryTarget, g_tray.nid.uCallbackMessage, 0, WM_CONTEXTMENU);
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
 int g_exitCode = 0;
 
 struct App {
     void Launch()
     {
         SettingsUiCallbacks callbacks;
+        callbacks.imageDirectory = g_appDataPaths.configDirectory;
+        callbacks.menuPreview = g_menuPreview;
+        callbacks.menuCommand = [](int command) {
+            if (g_menuPreview || g_trayLiveTest || g_traySmoke) {
+                if (command == ID_SETTINGS) g_settingsUi->ShowSettings(true);
+                else if (command == ID_EXIT || g_menuPreview) PostQuitMessage(0);
+                return;
+            }
+            if (command == ID_SETTINGS) g_tray.OpenSettings();
+            else if (command == ID_STARTUP) ToggleStartupRegistration();
+            else if (command == ID_EXIT) g_tray.ExitApplication();
+        };
         if (g_uiSmokeTest) {
             smokeConfig.url = "mqtt://localhost:1883";
             smokeConfig.topics = {{"test/日本語", "old-image.png"}};
@@ -254,8 +285,13 @@ struct App {
         }
         g_settingsUi = std::make_unique<SettingsUi>(std::move(callbacks));
 
-        if (g_uiSmokeTest) {
-            if (g_uiPreview) g_settingsUi->ShowSettings(true);
+        if (g_uiSmokeTest && !g_traySmoke && !g_trayLiveTest) {
+            if (g_menuPreview) {
+                POINT point{};
+                check_bool(GetCursorPos(&point));
+                g_settingsUi->ShowTrayMenu(point);
+            }
+            else if (g_uiPreview) g_settingsUi->ShowSettings(true);
             else StartUiSmokeTest();
             return;
         }
@@ -266,11 +302,23 @@ struct App {
                 [] {
                     spdlog::info("Exit selected from tray menu. Terminating...");
                     PostQuitMessage(0);
-                })) {
+                },
+                [](POINT point) { return g_settingsUi && g_settingsUi->ShowTrayMenu(point); })) {
             throw std::runtime_error("Failed to create tray icon");
         }
 
-        watcher = StartConfigWatcherAsync(g_appDataPaths.configDirectory.wstring(), GetCurrentThreadId());
+        if (g_traySmoke || g_trayLiveTest) {
+            smokeDirectory = std::filesystem::temp_directory_path() /
+                (L"MTQQToaster-tray-smoke-" + std::to_wstring(GetCurrentProcessId()));
+            check_bool(std::filesystem::create_directory(smokeDirectory));
+            g_appDataPaths.configDirectory = smokeDirectory;
+            g_appDataPaths.configPath = smokeDirectory / L"config.json";
+            if (!SaveConfig(g_appDataPaths.configPath, smokeConfig)) throw std::runtime_error("Cannot create tray watcher fixture");
+            StartWatcher(smokeDirectory.wstring());
+            if (g_traySmoke) StartUiSmokeTest();
+            return;
+        }
+        StartWatcher(g_appDataPaths.configDirectory.wstring());
         g_mqttThread = std::make_unique<std::jthread>(MqttWorkerThread);
         spdlog::info("Tray application ready.");
     }
@@ -282,6 +330,12 @@ struct App {
         spdlog::info("UI smoke test: waiting for Win32 message loop.");
     }
 
+    void StartWatcher(const std::wstring& directory)
+    {
+        watcherFinished = std::make_shared<std::atomic_bool>(false);
+        watcher = StartConfigWatcherAsync(directory, GetCurrentThreadId(), watcherFinished);
+    }
+
     bool IsSmokeTimer(const MSG& message) const
     {
         return smokeTimer && message.message == WM_TIMER && message.hwnd == nullptr && message.wParam == smokeTimer;
@@ -290,18 +344,61 @@ struct App {
     void Tick()
     {
         try {
+            if (g_traySmoke) {
+                switch (smokeStep++) {
+                case 0:
+                    if (!g_contentsChangedToken) {
+                        if (++watcherWaits > 100) throw std::runtime_error("Tray watcher initialization timed out");
+                        --smokeStep;
+                        break;
+                    }
+                    spdlog::info("Tray smoke: first XAML initialization through tray callback.");
+                    g_trayReentryTarget = g_tray.hwnd;
+                    trayReentryHook = SetWindowsHookExW(WH_CBT, TrayReentryHook, nullptr, GetCurrentThreadId());
+                    check_pointer(trayReentryHook);
+                    trayRequest = std::jthread([hwnd = g_tray.hwnd, message = g_tray.nid.uCallbackMessage] {
+                        SendMessageW(hwnd, message, 0, WM_RBUTTONUP);
+                        SendMessageW(hwnd, message, 0, WM_CONTEXTMENU);
+                    });
+                    break;
+                case 1:
+                    if (++trayWaits < 25) { --smokeStep; break; }
+                    check_bool(g_trayReentered);
+                    check_bool(UnhookWindowsHookEx(trayReentryHook));
+                    trayReentryHook = nullptr;
+                    g_trayReentryTarget = nullptr;
+                    if (!g_settingsUi->IsTrayMenuVisible()) throw std::runtime_error("Tray menu did not remain visible");
+                    g_settingsUi->ExerciseTrayMenuForSmokeTest();
+                    check_bool(PostMessageW(g_tray.hwnd, g_tray.nid.uCallbackMessage, 0, WM_CONTEXTMENU));
+                    break;
+                case 2:
+                    if (!g_settingsUi->IsTrayMenuVisible()) throw std::runtime_error("Tray menu reopen failed");
+                    g_settingsUi->ShowSettings(true);
+                    break;
+                case 3:
+                    if (!WaitForSettingsLayout()) { --smokeStep; break; }
+                    g_settingsUi->CloseAll();
+                    StopTimer();
+                    g_exitCode = 0;
+                    spdlog::info("Tray smoke passed.");
+                    PostQuitMessage(0);
+                    break;
+                }
+                return;
+            }
             switch (smokeStep++) {
             case 0:
                 spdlog::info("UI smoke test: opening settings after windowless startup.");
                 g_settingsUi->ShowSettings(true);
                 break;
             case 1:
+                if (!WaitForSettingsLayout()) { --smokeStep; break; }
                 if (!g_settingsUi->IsDefaultLayoutReady()) throw std::runtime_error("Default settings layout is incorrect");
                 {
                     const auto hwnd = g_settingsUi->SettingsHandle();
                     check_bool(GetWindowRect(hwnd, &smokeBounds));
                     check_bool(SetWindowPos(hwnd, nullptr, smokeBounds.left + 12, smokeBounds.top + 12,
-                        smokeBounds.right - smokeBounds.left - 40, smokeBounds.bottom - smokeBounds.top - 40,
+                        smokeBounds.right - smokeBounds.left, smokeBounds.bottom - smokeBounds.top,
                         SWP_NOZORDER | SWP_NOACTIVATE));
                     check_bool(GetWindowRect(hwnd, &smokeBounds));
                 }
@@ -313,7 +410,7 @@ struct App {
                 g_settingsUi->ShowSettings();
                 break;
             case 4:
-                if (!g_settingsUi->IsSettingsReady()) throw std::runtime_error("Settings controls did not reload");
+                if (!WaitForSettingsLayout()) { --smokeStep; break; }
                 {
                     RECT restored{};
                     check_bool(GetWindowRect(g_settingsUi->SettingsHandle(), &restored));
@@ -328,43 +425,26 @@ struct App {
                 g_settingsUi->CloseAll();
                 break;
             case 6:
-                // Exercise real dialog commands against an in-memory configuration.
                 g_settingsUi->ShowSettings(true);
-                {
-                    const auto hwnd = g_settingsUi->SettingsHandle();
-                    const auto form = GetDlgItem(hwnd, IDC_SETTINGS_FORM);
-                    check_pointer(form);
-                    check_bool(SetDlgItemTextW(form, IDC_TOPIC_IMAGE, L""));
-                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_EDIT, BN_CLICKED), 0);
-                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_ADD, BN_CLICKED), 0);
-                    check_bool(SetDlgItemTextW(form, IDC_TOPIC_NAME, L"追加/日本語/#"));
-                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_EDIT, BN_CLICKED), 0);
-                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_DELETE, BN_CLICKED), 0);
-                    check_bool(SetDlgItemTextW(form, IDC_MQTT_USER, L"テスト"));
-                    check_bool(SetDlgItemTextW(form, IDC_LOG_SIZE, L"12"));
-                    SendMessageW(hwnd, WM_COMMAND, IDOK, 0);
-                }
+                g_settingsUi->ExerciseEditsForSmokeTest();
                 if (g_settingsUi->SettingsHandle() || smokeSaves != 1 || smokeConfig.topics.size() != 1 ||
                     !smokeConfig.topics[0].image.empty() || smokeConfig.user != "テスト" || smokeConfig.maxLogSizeMb != 12) {
                     throw std::runtime_error("Settings commands did not save the expected configuration");
                 }
                 g_settingsUi->ShowSettings();
-                {
-                    const auto hwnd = g_settingsUi->SettingsHandle();
-                    check_bool(SetDlgItemTextW(GetDlgItem(hwnd, IDC_SETTINGS_FORM), IDC_MQTT_USER, L"cancelled"));
-                    SendMessageW(hwnd, WM_COMMAND, IDCANCEL, 0);
-                }
+                g_settingsUi->ExerciseCancelForSmokeTest();
                 if (smokeSaves != 1 || smokeConfig.user != "テスト") throw std::runtime_error("Cancel saved settings");
                 spdlog::info("UI smoke test: topic add/update/delete, image removal, save and cancel passed.");
                 break;
             case 7:
+                g_settingsUi->ExerciseTrayMenuForSmokeTest();
                 smokeDirectory = std::filesystem::temp_directory_path() /
                     (L"MTQQToaster-ui-smoke-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
                 check_bool(std::filesystem::create_directory(smokeDirectory));
                 g_appDataPaths.configDirectory = smokeDirectory;
                 g_appDataPaths.configPath = smokeDirectory / L"config.json";
                 if (!SaveConfig(g_appDataPaths.configPath, smokeConfig)) throw std::runtime_error("Cannot create watcher fixture");
-                watcher = StartConfigWatcherAsync(smokeDirectory.wstring(), GetCurrentThreadId());
+                StartWatcher(smokeDirectory.wstring());
                 break;
             case 8:
                 if (watcher.Status() == Windows::Foundation::AsyncStatus::Started) {
@@ -387,7 +467,7 @@ struct App {
                 spdlog::info("UI smoke test: configuration watcher reload passed.");
                 StopConfigWatcher();
                 // Begin another initialization and immediately quit to cover shutdown during an await.
-                watcher = StartConfigWatcherAsync(smokeDirectory.wstring(), GetCurrentThreadId());
+                StartWatcher(smokeDirectory.wstring());
                 StopTimer();
                 g_exitCode = 0;
                 spdlog::info("UI smoke test passed.");
@@ -409,6 +489,14 @@ struct App {
     }
 
     void StopTimer() { if (smokeTimer) { KillTimer(nullptr, smokeTimer); smokeTimer = 0; } }
+    bool WaitForSettingsLayout()
+    {
+        // XAML attaches and measures asynchronously after its HWND is shown.
+        // Keep the geometry assertions, but wait for an actual first layout.
+        if (g_settingsUi->IsSettingsReady()) { layoutWaits = 0; return true; }
+        if (++layoutWaits > 50) throw std::runtime_error("Settings first layout timed out");
+        return false;
+    }
     bool ProcessConfigMessage(const MSG& message)
     {
         if (message.message == WM_CONFIG_CHANGED && !message.hwnd) {
@@ -427,6 +515,8 @@ struct App {
 
     ~App()
     {
+        if (trayReentryHook) UnhookWindowsHookEx(trayReentryHook);
+        g_trayReentryTarget = nullptr;
         StopTimer();
         if (configTimer) KillTimer(nullptr, configTimer);
         g_tray.Destroy();
@@ -436,8 +526,9 @@ struct App {
             StopConfigWatcher();
             if (watcher) {
                 watcher.Cancel();
-                // Complete STA continuations before COM teardown; no new subscriptions are allowed.
-                while (watcher.Status() == Windows::Foundation::AsyncStatus::Started) {
+                // Cancel changes Status before the suspended coroutine has unwound.
+                // Wait for its body as well before deleting fixtures or stopping COM.
+                while (!watcherFinished->load(std::memory_order_acquire)) {
                     MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
                     MSG message{};
                     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -458,22 +549,37 @@ struct App {
     }
 
     UINT_PTR smokeTimer = 0;
+    std::jthread trayRequest;
+    HHOOK trayReentryHook = nullptr;
+    int trayWaits = 0;
     UINT_PTR configTimer = 0;
     Windows::Foundation::IAsyncAction watcher{nullptr};
+    std::shared_ptr<std::atomic_bool> watcherFinished;
     int smokeStep = 0;
     RECT smokeBounds{};
     AppConfig smokeConfig;
     int smokeSaves = 0;
     std::filesystem::path smokeDirectory;
     int watcherWaits = 0;
+    int layoutWaits = 0;
 };
 
 }
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR commandLine, _In_ int) {
-    g_uiPreview = std::string_view(commandLine) == "--ui-preview";
-    g_uiSmokeTest = g_uiPreview || std::string_view(commandLine) == "--ui-smoke-test";
-    g_exitCode = g_uiSmokeTest && !g_uiPreview ? 1 : 0;
+    const std::string_view arguments(commandLine);
+    const bool englishTest = arguments == "--ui-preview-en" || arguments == "--ui-smoke-test-en" || arguments == "--menu-preview-en";
+    const bool japaneseTest = arguments == "--ui-preview-ja" || arguments == "--ui-smoke-test-ja" || arguments == "--menu-preview-ja";
+    if (englishTest || japaneseTest) {
+        SetThreadUILanguage(MAKELANGID(japaneseTest ? LANG_JAPANESE : LANG_ENGLISH,
+            japaneseTest ? SUBLANG_DEFAULT : SUBLANG_ENGLISH_US));
+    }
+    g_menuPreview = arguments == "--menu-preview-en" || arguments == "--menu-preview-ja";
+    g_uiPreview = g_menuPreview || arguments == "--ui-preview" || arguments == "--ui-preview-en" || arguments == "--ui-preview-ja";
+    g_traySmoke = arguments == "--tray-smoke-test";
+    g_trayLiveTest = arguments == "--tray-live-test";
+    g_uiSmokeTest = g_trayLiveTest || g_traySmoke || g_uiPreview || arguments == "--ui-smoke-test" || arguments == "--ui-smoke-test-en" || arguments == "--ui-smoke-test-ja";
+    g_exitCode = g_uiSmokeTest && !g_uiPreview && !g_trayLiveTest ? 1 : 0;
     init_apartment(apartment_type::single_threaded);
     const INITCOMMONCONTROLSEX commonControls{sizeof(commonControls), ICC_STANDARD_CLASSES};
     if (!InitCommonControlsEx(&commonControls)) { uninit_apartment(); return 1; }
@@ -494,7 +600,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR comm
     else {
         g_appDataPaths = GetAppDataPaths();
         if (!InitializeAppData(g_appDataPaths)) {
-            MessageBoxW(NULL, L"アプリケーションデータフォルダーを初期化できませんでした。", L"MTQQToaster", MB_ICONERROR | MB_OK);
+            MessageBoxW(NULL, UiText(UiString::DataInitFailed), L"MTQQToaster", MB_ICONERROR | MB_OK);
             if (hMutex) CloseHandle(hMutex);
             uninit_apartment();
             return 1;
@@ -521,12 +627,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR comm
             if (app.IsSmokeTimer(message)) { app.Tick(); continue; }
             if (app.ProcessConfigMessage(message)) continue;
             if (g_settingsUi && g_settingsUi->ProcessMessage(message)) {
-                if (g_uiPreview && !g_settingsUi->SettingsHandle()) break;
+                if (g_uiPreview && !g_settingsUi->SettingsHandle() && !g_settingsUi->IsTrayMenuVisible()) break;
                 continue;
             }
             TranslateMessage(&message);
             DispatchMessageW(&message);
-            if (g_uiPreview && !g_settingsUi->SettingsHandle()) break;
+            if (g_uiPreview && !g_settingsUi->SettingsHandle() && !g_settingsUi->IsTrayMenuVisible()) break;
         }
         if (result == -1) g_exitCode = 1;
     }

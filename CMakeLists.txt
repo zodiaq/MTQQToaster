@@ -33,6 +33,7 @@ enable_testing()
 
 # 1. ロジック部（静的ライブラリ）
 add_library(MTQQToasterLib STATIC
+    src/ui_text.cpp
     src/app_logic.cpp
     src/mqtt_client.cpp
     src/mqtt_transport.cpp
@@ -66,7 +67,7 @@ target_link_libraries(MTQQToasterLib
 
 target_compile_options(MTQQToasterLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
 target_compile_definitions(MTQQToasterLib PUBLIC SPDLOG_WCHAR_FILENAMES
-    _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000006 CERT_CHAIN_PARA_HAS_EXTRA_FIELDS)
+    _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000007 CERT_CHAIN_PARA_HAS_EXTRA_FIELDS)
 
 # 2. 本番用 EXE
 add_executable(MTQQToaster WIN32
@@ -81,6 +82,7 @@ target_include_directories(MTQQToaster PRIVATE
 target_link_libraries(MTQQToaster PRIVATE
     MTQQToasterLib
     Comctl32
+    Dwmapi
 )
 target_compile_options(MTQQToaster PRIVATE /permissive- /W4)
 # resources/app.rc embeds the application manifest.
@@ -124,6 +126,13 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(MTQQToasterTests)
+
+option(MTQQTOASTER_XAML_PROBE "Build the isolated OS XAML feasibility probe" OFF)
+if(MTQQTOASTER_XAML_PROBE)
+    add_executable(MTQQToasterXamlProbe tests/xaml_probe.cpp tests/xaml_probe.manifest)
+    target_compile_options(MTQQToasterXamlProbe PRIVATE /utf-8 /permissive- /W4)
+    target_link_libraries(MTQQToasterXamlProbe PRIVATE windowsapp)
+endif()
 
 # Opt-in local socket/TLS tests; the fixture creates memory-only certificate trust.
 option(MTQQTOASTER_TRANSPORT_TESTS "Enable local TCP/Schannel integration tests (PowerShell 7.5+)" OFF)

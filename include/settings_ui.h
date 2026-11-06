@@ -9,6 +9,9 @@
 #include <vector>
 
 struct SettingsUiCallbacks {
+    std::filesystem::path imageDirectory;
+    std::function<void(int)> menuCommand;
+    bool menuPreview = false;
     std::function<AppConfig()> loadConfig;
     std::function<bool(const AppConfig&, const std::vector<std::filesystem::path>&, std::wstring&)> saveConfig;
     std::function<std::optional<SettingsWindowPlacement>()> loadPlacement;
@@ -24,10 +27,15 @@ public:
     SettingsUi& operator=(const SettingsUi&) = delete;
 
     void ShowSettings(bool resetPlacement = false);
+    bool ShowTrayMenu(POINT point);
+    bool IsTrayMenuVisible() const;
+    void ExerciseTrayMenuForSmokeTest();
     bool IsSettingsReady() const;
     bool IsDefaultLayoutReady() const;
     HWND SettingsHandle() const;
     void CloseAll();
+    void ExerciseEditsForSmokeTest();
+    void ExerciseCancelForSmokeTest();
     bool ProcessMessage(MSG& message);
 
 private:

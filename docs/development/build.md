@@ -40,7 +40,7 @@ ctest --test-dir build -C Release --output-on-failure --no-tests=error
 EXEは`build/Release/MTQQToaster.exe`です。起動後の操作は[操作マニュアル](../user-guide.md)を参照してください。
 Debugの場合は、ビルドとテストの`Release`を`Debug`に置き換えてください。
 アプリと依存ライブラリはx64・静的CRT（Release: `/MT`、Debug: `/MTd`）でビルドします。
-対応するWindows上では追加のWindows App Runtime・.NET・VC++ Redistributableのインストールは不要です。実行モジュールは`MTQQToaster.exe`だけです（設定例と依存ライブラリのライセンス文書は別途配布）。MQTTは静的リンクしたcoreMQTT v2.3.1、TLSはOS標準のSchannelを利用し、OpenSSLは不要です。Windows 10 version 1809以降／Windows 11を対象とします。
+Windows App Runtime・.NETは使用しません。アプリ本体のCRTとvcpkg依存関係は引き続き静的リンクします。OS内蔵XAMLを利用するため、これだけを根拠にVC++ Runtimeの追加導入が不要とは保証できません。公式資料は非MSIXのXAML IslandsにVisual C++ Runtimeを要件として記載しており、開発ツールのない環境での確認は未実施です（[検証記録](../validation/2026-11-07-os-xaml.md)）。配布する実行モジュールは`MTQQToaster.exe`だけです（設定例と依存ライブラリのライセンス文書は別途配布）。MQTTは静的リンクしたcoreMQTT v2.3.1、TLSはOS標準のSchannelを利用し、OpenSSLは不要です。Windows 10 version 1903以降／Windows 11を対象とします。
 
 ## 以前の構成で失敗していた場合
 
