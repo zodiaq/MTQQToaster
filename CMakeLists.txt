@@ -1,7 +1,12 @@
 ﻿# CMakeList.txt : 最上位の CMake プロジェクト ファイル。グローバル構成を行います
 # また、サブプロジェクトをここに含めます。
 #
-cmake_minimum_required (VERSION 3.20)
+cmake_minimum_required (VERSION 4.2)
+
+# project()より前にvcpkgを有効にし、通常のcmake -B build -S .でも依存関係を復元する。
+include(cmake/ConfigureVcpkg.cmake)
+set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "vcpkg target triplet")
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "MSVC runtime library")
 
 # サポートされている場合は、MSVC コンパイラのホット リロードを有効にします。
 if (POLICY CMP0141)
@@ -19,7 +24,7 @@ if(NOT MSVC)
     message(FATAL_ERROR "This project requires MSVC on Windows.")
 endif()
 
-find_package(mosquitto CONFIG REQUIRED)
+find_package(unofficial-mosquitto CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
@@ -44,7 +49,7 @@ target_link_libraries(MTQQToasterLib
         Ws2_32         # WinSock (Socket 通信)
 )
 
-target_compile_options(MTQQToasterLib PRIVATE /utf-8 /permissive- /W4)
+target_compile_options(MTQQToasterLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
 
 # 2. 本番用 EXE
 add_executable(MTQQToaster WIN32
@@ -67,18 +72,18 @@ target_link_libraries(MTQQToasterTests
 if(MSVC)
     # コンパイルオプション: サイズ優先最適化 (/O1) と 未使用コードの分離 (/Gy)
     target_compile_options(MTQQToaster PRIVATE
-        $<$<CONFIG:Release>:/O1 /Gy /Gw /GL>
+        "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
     )
     target_compile_options(MTQQToasterLib PRIVATE
-        $<$<CONFIG:Release>:/O1 /Gy /Gw /GL>
+        "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
     )
 
     # リンクオプション: 未使用コード/データの削除 (/OPT:REF, /OPT:ICF) と 全体プログラム最適化 (/LTCG)
     target_link_options(MTQQToaster PRIVATE
-        $<$<CONFIG:Release>:/OPT:REF /OPT:ICF /LTCG>
+        "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF;/LTCG>"
     )
     target_link_options(MTQQToasterLib PRIVATE
-        $<$<CONFIG:Release>:/OPT:REF /OPT:ICF /LTCG>
+        "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF;/LTCG>"
     )
 endif()
 

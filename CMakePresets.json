@@ -1,16 +1,13 @@
 ﻿{
     "version": 3,
+    "cmakeMinimumRequired": { "major": 4, "minor": 2, "patch": 0 },
     "configurePresets": [
         {
             "name": "windows-base",
             "hidden": true,
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/out/build/${presetName}",
-            "installDir": "${sourceDir}/out/install/${presetName}",
-            "cacheVariables": {
-                "CMAKE_C_COMPILER": "cl.exe",
-                "CMAKE_CXX_COMPILER": "cl.exe"
-            },
+            "generator": "Visual Studio 18 2026",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/out/build/windows-x64",
             "condition": {
                 "type": "equals",
                 "lhs": "${hostSystemName}",
@@ -20,40 +17,32 @@
         {
             "name": "x64-debug",
             "displayName": "x64 Debug",
-            "inherits": "windows-base",
-            "architecture": {
-                "value": "x64",
-                "strategy": "external"
-            },
-            "environment": {
-              "VSLANG": "1033",
-              "LC_ALL": "C",
-              "LANG": "C"
-            },
-            "cacheVariables": {
-              "CMAKE_BUILD_TYPE": "Debug",
-              "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake",
-              "CMAKE_TOOLCHAIN_FILE": "$penv{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-              "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-              "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug"
-            }
+            "inherits": "windows-base"
         },
         {
             "name": "x64-release",
             "displayName": "x64 Release",
-            "inherits": "x64-debug",
-            "environment": {
-              "VSLANG": "1033",
-              "LC_ALL": "C",
-              "LANG": "C"
-            },
-            "cacheVariables": {
-              "CMAKE_BUILD_TYPE": "Release",
-              "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake",
-              "CMAKE_TOOLCHAIN_FILE": "$penv{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-              "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-              "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
-            }
+            "inherits": "windows-base"
+        }
+    ],
+    "buildPresets": [
+        { "name": "x64-debug", "configurePreset": "x64-debug", "configuration": "Debug" },
+        { "name": "x64-release", "configurePreset": "x64-release", "configuration": "Release" }
+    ],
+    "testPresets": [
+        {
+            "name": "x64-debug",
+            "configurePreset": "x64-debug",
+            "configuration": "Debug",
+            "output": { "outputOnFailure": true },
+            "execution": { "noTestsAction": "error" }
+        },
+        {
+            "name": "x64-release",
+            "configurePreset": "x64-release",
+            "configuration": "Release",
+            "output": { "outputOnFailure": true },
+            "execution": { "noTestsAction": "error" }
         }
     ]
 }

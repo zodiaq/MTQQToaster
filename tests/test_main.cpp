@@ -51,11 +51,11 @@ TEST(ConfigTest, LoadValidConfig) {
         "mqtt_url": "mqtt://10.0.0.1:1883",
         "mqtt_topics": [ "mqtt_toaster/#" ],
         "mqtt_user": "admin",
-        "mqtt_pass": "password"
+        "mqtt_pass": "password",
         "log_level": "DEBUG",
         "log_max_size_mb": 5,
         "log_max_files": 3
-    }    })";
+    })";
     out.close();
 
     AppConfig cfg;

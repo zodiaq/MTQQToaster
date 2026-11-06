@@ -7,35 +7,31 @@
 - `MTQQToasterTests`: `tests/test_main.cpp`を使うGoogleTest EXE。`gtest_discover_tests`でCTestに登録する。
 - C++23が必須で、MSVC以外は`CMakeLists.txt`で拒否する。
 - vcpkgマニフェストはmosquitto、spdlog、nlohmann-json、gtestを指定し、`builtin-baseline`を固定している。更新は依頼に必要な範囲で行う。
-- プリセットは`x64-debug`と`x64-release`。どちらもNinjaと`x64-windows-static`を使い、CRTはそれぞれ`MultiThreadedDebug`（/MTd）、`MultiThreaded`（/MT）。
-- 現在はconfigureプリセットのみ。`cmake --build --preset x64-debug`や`ctest --preset x64-debug`に対応するbuild/testプリセットはない。
+- プリセットは`x64-debug`と`x64-release`。Visual Studio 18 2026 generatorで`out/build/windows-x64`を共有し、build/testプリセットで構成を選ぶ。
+- プリセットなしでも`cmake -B build -S .`でVS付属vcpkgを自動検出する。`x64-windows-static`と静的CRT（Debug: /MTd、それ以外: /MT）は`project()`より前に設定する。
 
 ## 環境を確認する
 
-Visual Studioのx64開発者用PowerShell等、MSVCとWindows SDKが有効なシェルでリポジトリルートから実行する。
-通常のPowerShellでは`cl.exe`や`VSINSTALLDIR`が設定されていない場合がある。
+Visual Studio 2026 Communityの「C++によるデスクトップ開発」を、MSVC x64/x86、Windows SDK、CMakeツール、vcpkgを含めてインストールする。必要なコンポーネントは`.vsconfig`にも記載している。
+Developer PowerShell for VS 2026でリポジトリルートから実行する。VS generatorはコンパイラを検出するため、CMakeがPATHにあれば通常のPowerShellでもよい。
 
 ```powershell
-Get-Command cmake, ctest, ninja, cl -ErrorAction Stop
-$env:VSINSTALLDIR
-$env:VCPKG_ROOT
-if ([string]::IsNullOrWhiteSpace($env:VCPKG_ROOT)) {
-    throw 'Set VCPKG_ROOT to an existing vcpkg directory in this shell.'
-}
-Test-Path -LiteralPath (Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake')
-cmake --list-presets
+Get-Command cmake, ctest -ErrorAction Stop
+cmake --version
+cmake --list-presets=all
 ```
 
-`VCPKG_ROOT`が空なら実在するvcpkgルートをこのシェルに設定してから`Test-Path`を実行する。ユーザー固有の絶対パスを共有プリセットへ書かない。
-プリセットは`VSINSTALLDIR`配下の`SegmentHeap.cmake`も参照するため、コンパイラだけでなくこのパスの存在も確認する。
-CMakeは`CMakeLists.txt`の最小要件に加え、プリセットのschema version 3に対応する版が必要。
+CMake 4.2以降が必要（VS2026 generator対応）。VS付属版を使えば別途導入は不要。
+`cmake/ConfigureVcpkg.cmake`は明示的なtoolchain、`VCPKG_ROOT`、VS付属vcpkgの順に選択する。VSはgeneratorの選択先、`VSINSTALLDIR`、`vswhere`から検出する。
+通常は環境変数の設定、vcpkgのclone/bootstrap/integrateは不要。初回の依存復元にはネットワーク接続が必要。
+ユーザー固有の絶対パスを共有プリセットへ書かない。Ninjaを明示する場合だけ、開発者シェルとNinjaが利用できることを確認する。
 
 ## Debugの標準手順
 
 ```powershell
 cmake --preset x64-debug
-cmake --build out/build/x64-debug --parallel
-ctest --test-dir out/build/x64-debug --output-on-failure --no-tests=error
+cmake --build --preset x64-debug --parallel
+ctest --preset x64-debug
 ```
 
 各コマンドの終了コードを確認し、失敗した段階で原因を調べる。構成失敗後に古いテストEXEを実行して成功扱いにしない。
@@ -45,18 +41,26 @@ Releaseを確認する場合:
 
 ```powershell
 cmake --preset x64-release
-cmake --build out/build/x64-release --parallel
-ctest --test-dir out/build/x64-release --output-on-failure --no-tests=error
+cmake --build --preset x64-release --parallel
+ctest --preset x64-release
+```
+
+プリセットなしの標準手順も確認する:
+
+```powershell
+cmake -B build -S .
+cmake --build build --config Release --parallel
+ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
 ## 診断の順序
 
-- 構成失敗: 開発者シェル、`VSINSTALLDIR`、`VCPKG_ROOT`、Ninja、SDK、vcpkgの復元ログを確認する。
-- キャッシュ不一致: `CMakeCache.txt`のgenerator、toolchain、triplet、ソースディレクトリを確認する。ルートや`build/`にある過去のVisual Studio生成物と、プリセットの`out/build/`を混用しない。
+- 構成失敗: CMakeの版、VSのC++ワークロード、SDK、検出したvcpkgのパスと復元ログを確認する。明示した`VCPKG_ROOT`やtoolchainがあればそちらが優先される。
+- キャッシュ不一致: `CMakeCache.txt`のgenerator、toolchain、triplet、ソースディレクトリを確認する。設定変更時は`cmake --fresh -B build -S .`または新しいビルドディレクトリを使う。生成物やキャッシュは直接編集しない。
 - コンパイル失敗: 最初の診断と対象ターゲットを確認する。使用する標準ライブラリと`winrt/Windows.*.h`を明示的にincludeし、偶然の推移的includeに依存しない。
 - リンク失敗: WinRT/Win32ライブラリ、vcpkgのimported target、x64、CRTの一致を確認する。無関係なライブラリ追加や警告抑制で回避しない。
-- 日本語の文字化け: ソースのUTF-8と対象ターゲットの`/utf-8`を確認する。現在このオプションは`MTQQToasterLib`にPRIVATEで設定され、EXEとテストには伝播しない。
-- テスト失敗: 入力・期待値・実装を比較する。調査時点の`ConfigTest.LoadValidConfig`のJSONにはカンマ欠損と余分な閉じ括弧がある。現状を再確認し、実装の回帰と区別する。この記述を失敗の恒久的な免除にしない。
+- 日本語の文字化け: ソースのUTF-8と対象ターゲットの`/utf-8`を確認する。このオプションは`MTQQToasterLib`からEXEとテストにも伝播する。
+- テスト失敗: 入力・期待値・実装を比較し、既存の不具合と今回の回帰を区別する。テスト入力のJSONが意図した正常・異常ケースになっていることも確認する。
 
 ## 検証範囲
 

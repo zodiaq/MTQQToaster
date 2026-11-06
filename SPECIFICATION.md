@@ -113,10 +113,11 @@ If mandatory parameters	are not set, it will be processed with the title set to 
 
 ### Development Environment
 
-* **IDE / Compiler**: Visual Studio 2026 (`/std:c++23` or higher)
+* **IDE / Compiler**: Visual Studio 2026 Community with Desktop development with C++ (C++23)
 * **Subsystem Setting**: `Windows (/SUBSYSTEM:WINDOWS)`
-* CMake
-* vcpkg
+* Bundled CMake 4.2 or later, Windows SDK and vcpkg (see `.vsconfig`)
+* `cmake -B build -S .` automatically selects vcpkg and restores the pinned manifest dependencies
+* x64 with static CRT (`/MT` for Release, `/MTd` for Debug); see [README.md](README.md) for build and test commands
 
 ### External Libraries
 
