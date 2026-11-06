@@ -56,6 +56,9 @@ rules.ninja
 # Dependencies installed by vcpkg
 vcpkg_installed/
 
+# Local samples
+/samples/
+
 # Temporary files and editor backups
 [Tt]mp/
 [Tt]emp/
