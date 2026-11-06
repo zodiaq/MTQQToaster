@@ -29,6 +29,22 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
+set(WINAPP_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.winapp")
+if(NOT EXISTS "${WINAPP_SDK_DIR}/include/winrt/Microsoft.UI.Xaml.h")
+    find_program(WINAPP_CLI winapp)
+    if(NOT WINAPP_CLI)
+        message(FATAL_ERROR "Windows App SDK is missing. Install WinApp CLI and run 'winapp restore'.")
+    endif()
+    execute_process(
+        COMMAND "${WINAPP_CLI}" restore
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE WINAPP_RESTORE_RESULT
+    )
+    if(NOT WINAPP_RESTORE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to restore Windows App SDK (exit ${WINAPP_RESTORE_RESULT}).")
+    endif()
+endif()
+
 enable_testing()
 
 # 1. ロジック部（静的ライブラリ）
@@ -62,19 +78,62 @@ target_link_libraries(MTQQToasterLib
 target_compile_options(MTQQToasterLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
 target_compile_definitions(MTQQToasterLib PUBLIC SPDLOG_WCHAR_FILENAMES)
 
+# WinUI実行ファイル用。Windows App SDKが生成したC++/WinRT投影と同じ版で
+# app_logic.cppをコンパイルし、SDK同梱投影を使うテストターゲットと分離する。
+add_library(MTQQToasterWinUiLib STATIC
+    src/app_logic.cpp
+)
+target_include_directories(MTQQToasterWinUiLib
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${WINAPP_SDK_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources
+)
+target_link_libraries(MTQQToasterWinUiLib
+    PUBLIC
+        unofficial::mosquitto::mosquitto
+        spdlog::spdlog_header_only
+        nlohmann_json::nlohmann_json
+        windowsapp
+        Shell32
+        Comdlg32
+        Windowscodecs
+        Gdi32
+        User32
+        Kernel32
+        Advapi32
+        Ws2_32
+)
+target_compile_options(MTQQToasterWinUiLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
+target_compile_definitions(MTQQToasterWinUiLib PUBLIC SPDLOG_WCHAR_FILENAMES)
+
 # 2. 本番用 EXE
 add_executable(MTQQToaster WIN32
     src/main.cpp
+    src/modern_ui.cpp
     resources/app.rc
 )
 set_source_files_properties(resources/app.rc PROPERTIES COMPILE_FLAGS "/c65001")
-target_include_directories(MTQQToaster PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
-target_link_libraries(MTQQToaster PRIVATE MTQQToasterLib)
+target_include_directories(MTQQToaster PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources
+    ${WINAPP_SDK_DIR}/include
+)
+target_link_directories(MTQQToaster PRIVATE ${WINAPP_SDK_DIR}/lib/x64)
+target_link_libraries(MTQQToaster PRIVATE
+    MTQQToasterWinUiLib
+    Microsoft.WindowsAppRuntime.Bootstrap.lib
+    OneCoreUap.lib
+)
+target_compile_options(MTQQToaster PRIVATE /bigobj)
 set_target_properties(MTQQToaster PROPERTIES WIN32_EXECUTABLE TRUE)
 add_custom_command(TARGET MTQQToaster POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/config.sample.json
         $<TARGET_FILE_DIR:MTQQToaster>/config.sample.json
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${WINAPP_SDK_DIR}/bin/x64/Microsoft.WindowsAppRuntime.Bootstrap.dll
+        $<TARGET_FILE_DIR:MTQQToaster>/Microsoft.WindowsAppRuntime.Bootstrap.dll
 )
 
 # 3. テスト用 EXE
@@ -93,6 +152,9 @@ if(MSVC)
         "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
     )
     target_compile_options(MTQQToasterLib PRIVATE
+        "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
+    )
+    target_compile_options(MTQQToasterWinUiLib PRIVATE
         "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
     )
 

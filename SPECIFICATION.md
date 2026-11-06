@@ -33,7 +33,7 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 
 ### 2.3 Configuration and Hot Reload Feature
 
-* **Settings UI**: The tray menu opens a native Win32 settings dialog for MQTT connection, topics, credentials, and logging.
+* **Settings UI**: The tray menu opens a WinUI 3 settings window for MQTT connection, topics, credentials, images, and logging.
 * **Configuration File**: The UI persists settings to the per-user application data directory. JSON remains an internal persistence format.
 * **Legacy Migration**: On first launch, an existing `config.json` beside the executable is copied to the new location. Otherwise `config.sample.json` is used when available.
 * **Dynamic Reload**: Immediately detects modifications and saves to `config.json` at the kernel level.
@@ -50,9 +50,13 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 ### 2.5 System Tray (Notification Area) UI
 * **Resident Display**: Displays an icon in the system tray (default is the standard Windows app icon).
 * **Right-Click Menu**
+	* Displayed as a native Win32 popup menu.
 	* "Add to Startup" Register/unregister startup
 	* "Settings..." Open the settings dialog
 	* "Exit" Exit the application
+* Closing the WinUI settings window does not terminate the tray application. WinUI initialization runs after Application construction, in `OnLaunched`.
+* Settings initially open centered in the cursor monitor's work area, sized to fit their contents (capped to the work area). Log level, maximum size and retention count share one row.
+* Normal bounds and maximized state are saved separately in `ui-state.json` on close and restored across restarts. Holding Shift while selecting Settings resets placement and size; invalid or off-screen bounds are recovered safely.
 
 ---
 

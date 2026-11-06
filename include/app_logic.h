@@ -4,6 +4,7 @@
 #include <vector>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <windows.h>
 #include <spdlog/spdlog.h>
 
@@ -40,6 +41,19 @@ struct AppStoragePaths {
     std::filesystem::path logPath;
 };
 
+struct SettingsWindowPlacement {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    bool maximized = false;
+    bool operator==(const SettingsWindowPlacement&) const = default;
+};
+
+std::optional<SettingsWindowPlacement> LoadSettingsWindowPlacement(const std::filesystem::path& path);
+bool SaveSettingsWindowPlacement(const std::filesystem::path& path, const SettingsWindowPlacement& placement);
+SettingsWindowPlacement FitSettingsWindowToWorkArea(SettingsWindowPlacement placement, const RECT& workArea);
+
 // --- テスト・利用対象関数 ---
 std::filesystem::path GetModuleDirectory();
 AppStoragePaths GetAppDataPaths();
@@ -66,10 +80,17 @@ public:
     HWND hwnd = NULL;
     NOTIFYICONDATAW nid = { 0 };
 
-    bool Create(HINSTANCE hInstance, std::function<void(HWND)> settingsHandler);
+    bool Create(HINSTANCE hInstance, std::function<void()> settingsHandler,
+                std::function<void()> exitHandler);
     void Destroy();
-    void OpenSettings(HWND owner) const;
+    void OpenSettings() const noexcept;
+    void ExitApplication() const noexcept;
 
 private:
-    std::function<void(HWND)> settingsHandler_;
+    std::function<void()> settingsHandler_;
+    std::function<void()> exitHandler_;
+    HICON icon_ = nullptr;
 };
+
+bool IsStartupRegistered();
+void ToggleStartupRegistration();

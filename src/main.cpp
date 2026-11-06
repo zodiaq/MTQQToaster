@@ -1,11 +1,11 @@
 #include "app_logic.h"
-#include "resource.h"
+#include "modern_ui.h"
 #include <thread>
 #include <atomic>
 #include <filesystem>
-#include <sstream>
-#include <commdlg.h>
-#include <wincodec.h>
+#include <string_view>
+#include <chrono>
+#include <stdexcept>
 #include <mosquitto.h>
 #include <fmt/ranges.h> // fmt::join に必要
 
@@ -13,6 +13,15 @@
 #include <winrt/windows.foundation.collections.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Search.h>
+#include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Xaml.Markup.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Windows.UI.Xaml.Interop.h>
+
+#include <MddBootstrap.h>
+#include <WindowsAppSDK-VersionInfo.h>
 
 using namespace winrt;
 using namespace Windows::Storage;
@@ -30,355 +39,71 @@ AppStoragePaths g_appDataPaths;
 
 namespace {
 
-struct TopicDialogState {
-    TopicConfig topic;
-    std::filesystem::path selectedImageSource;
-    HBITMAP previewBitmap = nullptr;
-};
-
-struct SettingsDialogState {
-    AppConfig config;
-    std::vector<std::filesystem::path> selectedImageSources;
-};
-
-std::wstring GetDialogText(HWND dialog, int controlId)
-{
-    const int length = GetWindowTextLengthW(GetDlgItem(dialog, controlId));
-    std::wstring value(static_cast<size_t>(length) + 1, L'\0');
-    GetDlgItemTextW(dialog, controlId, value.data(), length + 1);
-    value.resize(static_cast<size_t>(length));
-    return value;
-}
-
-void SetDialogText(HWND dialog, int controlId, const std::string& value)
-{
-    SetDlgItemTextW(dialog, controlId, winrt::to_hstring(value).c_str());
-}
-
-void RefreshTopicList(HWND dialog, const SettingsDialogState& state)
-{
-    const HWND list = GetDlgItem(dialog, IDC_TOPIC_LIST);
-    SendMessageW(list, LB_RESETCONTENT, 0, 0);
-    for (const auto& topic : state.config.topics) {
-        std::wstring label = winrt::to_hstring(topic.topic).c_str();
-        if (!topic.image.empty()) label += L"  [画像あり]";
-        SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-    }
-}
-
-HBITMAP CreateImageThumbnail(const std::filesystem::path& imagePath, UINT maxWidth, UINT maxHeight)
-{
-    winrt::com_ptr<IWICImagingFactory> factory;
-    winrt::check_hresult(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                         IID_PPV_ARGS(factory.put())));
-
-    winrt::com_ptr<IWICBitmapDecoder> decoder;
-    winrt::check_hresult(factory->CreateDecoderFromFilename(imagePath.c_str(), nullptr, GENERIC_READ,
-                                                            WICDecodeMetadataCacheOnLoad, decoder.put()));
-    winrt::com_ptr<IWICBitmapFrameDecode> frame;
-    winrt::check_hresult(decoder->GetFrame(0, frame.put()));
-
-    UINT sourceWidth = 0;
-    UINT sourceHeight = 0;
-    winrt::check_hresult(frame->GetSize(&sourceWidth, &sourceHeight));
-    if (sourceWidth == 0 || sourceHeight == 0) return nullptr;
-
-    const double scale = (std::min)(static_cast<double>(maxWidth) / sourceWidth,
-                                    static_cast<double>(maxHeight) / sourceHeight);
-    const UINT width = (std::max)(1U, static_cast<UINT>(sourceWidth * (std::min)(scale, 1.0)));
-    const UINT height = (std::max)(1U, static_cast<UINT>(sourceHeight * (std::min)(scale, 1.0)));
-
-    winrt::com_ptr<IWICBitmapScaler> scaler;
-    winrt::check_hresult(factory->CreateBitmapScaler(scaler.put()));
-    winrt::check_hresult(scaler->Initialize(frame.get(), width, height, WICBitmapInterpolationModeFant));
-
-    winrt::com_ptr<IWICFormatConverter> converter;
-    winrt::check_hresult(factory->CreateFormatConverter(converter.put()));
-    winrt::check_hresult(converter->Initialize(scaler.get(), GUID_WICPixelFormat32bppPBGRA,
-                                               WICBitmapDitherTypeNone, nullptr, 0.0,
-                                               WICBitmapPaletteTypeCustom));
-
-    BITMAPINFO bitmapInfo{};
-    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bitmapInfo.bmiHeader.biWidth = static_cast<LONG>(width);
-    bitmapInfo.bmiHeader.biHeight = -static_cast<LONG>(height);
-    bitmapInfo.bmiHeader.biPlanes = 1;
-    bitmapInfo.bmiHeader.biBitCount = 32;
-    bitmapInfo.bmiHeader.biCompression = BI_RGB;
-
-    void* pixels = nullptr;
-    HBITMAP bitmap = CreateDIBSection(nullptr, &bitmapInfo, DIB_RGB_COLORS, &pixels, nullptr, 0);
-    if (!bitmap) return nullptr;
-
-    const UINT stride = width * 4;
-    const HRESULT result = converter->CopyPixels(nullptr, stride, stride * height,
-                                                 static_cast<BYTE*>(pixels));
-    if (FAILED(result)) {
-        DeleteObject(bitmap);
-        winrt::check_hresult(result);
-    }
-    return bitmap;
-}
-
-void UpdateImageThumbnail(HWND dialog, TopicDialogState& state)
-{
-    std::filesystem::path imagePath = state.selectedImageSource;
-    if (imagePath.empty() && !state.topic.image.empty()) {
-        imagePath = g_appDataPaths.configDirectory / winrt::to_hstring(state.topic.image).c_str();
-    }
-
-    HBITMAP newBitmap = nullptr;
-    if (!imagePath.empty()) {
-        try {
-            newBitmap = CreateImageThumbnail(imagePath, 116, 71);
-        }
-        catch (const winrt::hresult_error&) {
-            newBitmap = nullptr;
-        }
-    }
-
-    SendDlgItemMessageW(dialog, IDC_TOPIC_IMAGE, STM_SETIMAGE, IMAGE_BITMAP,
-                        reinterpret_cast<LPARAM>(newBitmap));
-    if (state.previewBitmap) DeleteObject(state.previewBitmap);
-    state.previewBitmap = newBitmap;
-    SetDlgItemTextW(dialog, IDC_IMAGE_STATUS,
-                    imagePath.empty() ? L"画像なし" : (newBitmap ? L"プレビュー" : L"表示できません"));
-}
-
-INT_PTR CALLBACK TopicDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    auto* state = reinterpret_cast<TopicDialogState*>(GetWindowLongPtrW(dialog, DWLP_USER));
-    try {
-        if (message == WM_INITDIALOG) {
-            state = reinterpret_cast<TopicDialogState*>(lParam);
-            SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
-            SetDialogText(dialog, IDC_TOPIC_NAME, state->topic.topic);
-            UpdateImageThumbnail(dialog, *state);
-            return TRUE;
-        }
-        if (message == WM_DESTROY && state != nullptr) {
-            SendDlgItemMessageW(dialog, IDC_TOPIC_IMAGE, STM_SETIMAGE, IMAGE_BITMAP, 0);
-            if (state->previewBitmap) {
-                DeleteObject(state->previewBitmap);
-                state->previewBitmap = nullptr;
-            }
-            return TRUE;
-        }
-        if (message != WM_COMMAND || state == nullptr) return FALSE;
-
-        if (LOWORD(wParam) == IDC_IMAGE_BROWSE) {
-            std::wstring fileName(32768, L'\0');
-            OPENFILENAMEW options{};
-            options.lStructSize = sizeof(options);
-            options.hwndOwner = dialog;
-            options.lpstrFilter = L"画像ファイル (*.png;*.jpg;*.jpeg;*.gif)\0*.png;*.jpg;*.jpeg;*.gif\0すべてのファイル\0*.*\0";
-            options.lpstrFile = fileName.data();
-            options.nMaxFile = static_cast<DWORD>(fileName.size());
-            options.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-            if (GetOpenFileNameW(&options)) {
-                fileName.resize(wcslen(fileName.c_str()));
-                state->selectedImageSource = fileName;
-                UpdateImageThumbnail(dialog, *state);
-            }
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_IMAGE_CLEAR) {
-            state->topic.image.clear();
-            state->selectedImageSource.clear();
-            UpdateImageThumbnail(dialog, *state);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDCANCEL) {
-            EndDialog(dialog, IDCANCEL);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDOK) {
-            const auto topic = GetDialogText(dialog, IDC_TOPIC_NAME);
-            const auto first = topic.find_first_not_of(L" \t");
-            const auto last = topic.find_last_not_of(L" \t");
-            if (first == std::wstring::npos) {
-                MessageBoxW(dialog, L"topicを入力してください。", L"入力エラー", MB_OK | MB_ICONWARNING);
-                return TRUE;
-            }
-            state->topic.topic = winrt::to_string(winrt::hstring(topic.substr(first, last - first + 1)));
-            EndDialog(dialog, IDOK);
-            return TRUE;
-        }
-    }
-    catch (...) {
-        MessageBoxW(dialog, L"topic設定の処理中にエラーが発生しました。", L"MTQQToaster", MB_OK | MB_ICONERROR);
-        return TRUE;
-    }
-    return FALSE;
-}
-
-bool ReadPositiveNumber(HWND dialog, int controlId, size_t& value)
-{
-    const auto text = GetDialogText(dialog, controlId);
-    wchar_t* end = nullptr;
-    const unsigned long parsed = std::wcstoul(text.c_str(), &end, 10);
-    if (text.empty() || end == text.c_str() || *end != L'\0' || parsed == 0) return false;
-    value = static_cast<size_t>(parsed);
-    return true;
-}
-
 bool ValidateMqttUrl(const std::string& value)
 {
     try {
-        const Windows::Foundation::Uri uri(winrt::to_hstring(value));
+        const Windows::Foundation::Uri uri(to_hstring(value));
         const auto scheme = uri.SchemeName();
         return (scheme == L"mqtt" || scheme == L"mqtts") && !uri.Host().empty() && uri.Port() > 0;
     }
-    catch (const winrt::hresult_error&) {
+    catch (const hresult_error&) {
         return false;
     }
 }
 
-INT_PTR CALLBACK SettingsDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
+AppConfig GetConfigSnapshot()
 {
-    auto* state = reinterpret_cast<SettingsDialogState*>(GetWindowLongPtrW(dialog, DWLP_USER));
-    try {
-        if (message == WM_INITDIALOG) {
-            state = reinterpret_cast<SettingsDialogState*>(lParam);
-            SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
-            const auto& config = state->config;
-
-            SetDialogText(dialog, IDC_MQTT_URL, config.url);
-            RefreshTopicList(dialog, *state);
-            SetDialogText(dialog, IDC_MQTT_USER, config.user);
-            SetDialogText(dialog, IDC_MQTT_PASS, config.pass);
-            SetDlgItemInt(dialog, IDC_LOG_SIZE, static_cast<UINT>(config.maxLogSizeMb), FALSE);
-            SetDlgItemInt(dialog, IDC_LOG_FILES, static_cast<UINT>(config.maxLogFiles), FALSE);
-
-            const HWND logLevel = GetDlgItem(dialog, IDC_LOG_LEVEL);
-            constexpr const wchar_t* levels[] = { L"TRACE", L"DEBUG", L"INFO", L"WARN", L"ERROR", L"NONE" };
-            int selected = 2;
-            for (int i = 0; i < static_cast<int>(std::size(levels)); ++i) {
-                SendMessageW(logLevel, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(levels[i]));
-                if (config.logLevel == winrt::to_string(winrt::hstring(levels[i]))) selected = i;
-            }
-            SendMessageW(logLevel, CB_SETCURSEL, selected, 0);
-            return TRUE;
-        }
-
-        if (message != WM_COMMAND || state == nullptr) return FALSE;
-        if (LOWORD(wParam) == IDC_TOPIC_ADD) {
-            TopicDialogState topicState;
-            if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_TOPIC), dialog,
-                                TopicDialogProc, reinterpret_cast<LPARAM>(&topicState)) == IDOK) {
-                state->config.topics.push_back(std::move(topicState.topic));
-                state->selectedImageSources.push_back(std::move(topicState.selectedImageSource));
-                RefreshTopicList(dialog, *state);
-            }
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_TOPIC_EDIT) {
-            const auto selected = SendDlgItemMessageW(dialog, IDC_TOPIC_LIST, LB_GETCURSEL, 0, 0);
-            if (selected == LB_ERR) return TRUE;
-            TopicDialogState topicState{state->config.topics[static_cast<size_t>(selected)],
-                                        state->selectedImageSources[static_cast<size_t>(selected)]};
-            if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_TOPIC), dialog,
-                                TopicDialogProc, reinterpret_cast<LPARAM>(&topicState)) == IDOK) {
-                state->config.topics[static_cast<size_t>(selected)] = std::move(topicState.topic);
-                state->selectedImageSources[static_cast<size_t>(selected)] = std::move(topicState.selectedImageSource);
-                RefreshTopicList(dialog, *state);
-                SendDlgItemMessageW(dialog, IDC_TOPIC_LIST, LB_SETCURSEL, selected, 0);
-            }
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_TOPIC_DELETE) {
-            const auto selected = SendDlgItemMessageW(dialog, IDC_TOPIC_LIST, LB_GETCURSEL, 0, 0);
-            if (selected == LB_ERR) return TRUE;
-            state->config.topics.erase(state->config.topics.begin() + selected);
-            state->selectedImageSources.erase(state->selectedImageSources.begin() + selected);
-            RefreshTopicList(dialog, *state);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDCANCEL) {
-            EndDialog(dialog, IDCANCEL);
-            return TRUE;
-        }
-        if (LOWORD(wParam) != IDOK) return FALSE;
-
-        AppConfig config = state->config;
-        config.url = winrt::to_string(winrt::hstring(GetDialogText(dialog, IDC_MQTT_URL)));
-        config.user = winrt::to_string(winrt::hstring(GetDialogText(dialog, IDC_MQTT_USER)));
-        config.pass = winrt::to_string(winrt::hstring(GetDialogText(dialog, IDC_MQTT_PASS)));
-
-        wchar_t logLevel[16]{};
-        GetDlgItemTextW(dialog, IDC_LOG_LEVEL, logLevel, static_cast<int>(std::size(logLevel)));
-        config.logLevel = winrt::to_string(winrt::hstring(logLevel));
-
-        if (!ValidateMqttUrl(config.url)) {
-            MessageBoxW(dialog, L"MQTT URLには mqtt:// または mqtts:// の有効なURLを入力してください。", L"入力エラー", MB_OK | MB_ICONWARNING);
-            return TRUE;
-        }
-        if (config.topics.empty()) {
-            MessageBoxW(dialog, L"トピックを1件以上入力してください。", L"入力エラー", MB_OK | MB_ICONWARNING);
-            return TRUE;
-        }
-        if (!ReadPositiveNumber(dialog, IDC_LOG_SIZE, config.maxLogSizeMb) ||
-            !ReadPositiveNumber(dialog, IDC_LOG_FILES, config.maxLogFiles)) {
-            MessageBoxW(dialog, L"ログサイズと保持数には1以上の整数を入力してください。", L"入力エラー", MB_OK | MB_ICONWARNING);
-            return TRUE;
-        }
-
-        AppConfig activeConfig;
-        AcquireSRWLockShared(&g_configLock);
-        activeConfig = g_config;
-        ReleaseSRWLockShared(&g_configLock);
-
-        for (size_t i = 0; i < state->selectedImageSources.size(); ++i) {
-            if (state->selectedImageSources[i].empty()) continue;
-            std::string copiedFile;
-            if (!CopyToastImage(g_appDataPaths.configDirectory, state->selectedImageSources[i], copiedFile)) {
-                RemoveUnusedToastImages(g_appDataPaths.configDirectory, activeConfig.topics);
-                MessageBoxW(dialog, L"画像を設定フォルダーへコピーできませんでした。PNG、JPEG、GIFを選択してください。",
-                            L"画像エラー", MB_OK | MB_ICONERROR);
-                return TRUE;
-            }
-            config.topics[i].image = copiedFile;
-        }
-
-        if (!SaveConfig(g_appDataPaths.configPath, config)) {
-            RemoveUnusedToastImages(g_appDataPaths.configDirectory, activeConfig.topics);
-            MessageBoxW(dialog, L"設定を保存できませんでした。", L"保存エラー", MB_OK | MB_ICONERROR);
-            return TRUE;
-        }
-
-        RemoveUnusedToastImages(g_appDataPaths.configDirectory, config.topics);
-
-        AppConfig publishedConfig = config;
-        AcquireSRWLockExclusive(&g_configLock);
-        g_config = std::move(publishedConfig);
-        ReleaseSRWLockExclusive(&g_configLock);
-        UpdateLogLevel(config.logLevel);
-        g_needsReconnect.store(true, std::memory_order_release);
-        spdlog::info("Settings saved from the dialog.");
-        EndDialog(dialog, IDOK);
-        return TRUE;
-    }
-    catch (const std::exception& ex) {
-        spdlog::error("Settings dialog error: {}", ex.what());
-        MessageBoxW(dialog, L"設定処理中にエラーが発生しました。", L"MTQQToaster", MB_OK | MB_ICONERROR);
-        return TRUE;
-    }
-    catch (const winrt::hresult_error& ex) {
-        spdlog::error("Settings dialog HRESULT: {:#x}", static_cast<unsigned int>(ex.code().value));
-        MessageBoxW(dialog, L"設定処理中にWindows APIエラーが発生しました。", L"MTQQToaster", MB_OK | MB_ICONERROR);
-        return TRUE;
-    }
+    AppConfig config;
+    AcquireSRWLockShared(&g_configLock);
+    config = g_config;
+    ReleaseSRWLockShared(&g_configLock);
+    return config;
 }
 
-void ShowSettingsDialog(HWND owner)
+bool SaveModernSettings(const AppConfig& requestedConfig,
+                        const std::vector<std::filesystem::path>& selectedImages,
+                        std::wstring& error)
 {
-    SettingsDialogState state;
-    AcquireSRWLockShared(&g_configLock);
-    state.config = g_config;
-    ReleaseSRWLockShared(&g_configLock);
-    state.selectedImageSources.resize(state.config.topics.size());
-    DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS), owner,
-                    SettingsDialogProc, reinterpret_cast<LPARAM>(&state));
+    AppConfig config = requestedConfig;
+    if (!ValidateMqttUrl(config.url)) {
+        error = L"MQTT URLには mqtt:// または mqtts:// の有効なURLを入力してください。";
+        return false;
+    }
+    if (config.topics.empty()) {
+        error = L"トピックを1件以上入力してください。";
+        return false;
+    }
+    if (selectedImages.size() != config.topics.size()) {
+        error = L"topicの画像設定が不整合です。設定画面を開き直してください。";
+        return false;
+    }
+
+    const AppConfig activeConfig = GetConfigSnapshot();
+    for (size_t i = 0; i < selectedImages.size(); ++i) {
+        if (selectedImages[i].empty()) continue;
+        std::string copiedFile;
+        if (!CopyToastImage(g_appDataPaths.configDirectory, selectedImages[i], copiedFile)) {
+            RemoveUnusedToastImages(g_appDataPaths.configDirectory, activeConfig.topics);
+            error = L"画像を設定フォルダーへコピーできませんでした。PNG、JPEG、GIFを選択してください。";
+            return false;
+        }
+        config.topics[i].image = copiedFile;
+    }
+
+    if (!SaveConfig(g_appDataPaths.configPath, config)) {
+        RemoveUnusedToastImages(g_appDataPaths.configDirectory, activeConfig.topics);
+        error = L"設定を保存できませんでした。";
+        return false;
+    }
+
+    RemoveUnusedToastImages(g_appDataPaths.configDirectory, config.topics);
+    AcquireSRWLockExclusive(&g_configLock);
+    g_config = config;
+    ReleaseSRWLockExclusive(&g_configLock);
+    UpdateLogLevel(config.logLevel);
+    g_needsReconnect.store(true, std::memory_order_release);
+    spdlog::info("Settings saved from the WinUI window.");
+    return true;
 }
 
 }
@@ -540,57 +265,269 @@ void MqttWorkerThread(std::stop_token stoken) {
     mosquitto_lib_cleanup();
 }
 
-int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow) {
+namespace {
+
+std::unique_ptr<ModernUi> g_modernUi;
+TrayIcon g_tray;
+std::unique_ptr<std::jthread> g_mqttThread;
+HINSTANCE g_instance = nullptr;
+bool g_uiSmokeTest = false;
+int g_exitCode = 0;
+
+struct App : winrt::Microsoft::UI::Xaml::ApplicationT<App, winrt::Microsoft::UI::Xaml::Markup::IXamlMetadataProvider> {
+    App()
+    {
+        UnhandledException([](auto&&, const winrt::Microsoft::UI::Xaml::UnhandledExceptionEventArgs& args) {
+            spdlog::critical("Unhandled XAML exception: {}", to_string(args.Message()));
+        });
+    }
+
+    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(
+        const Windows::UI::Xaml::Interop::TypeName& type) { return MetadataProvider().GetXamlType(type); }
+    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(const hstring& name) {
+        return MetadataProvider().GetXamlType(name);
+    }
+    com_array<winrt::Microsoft::UI::Xaml::Markup::XmlnsDefinition> GetXmlnsDefinitions() {
+        return MetadataProvider().GetXmlnsDefinitions();
+    }
+
+    void OnLaunched(const winrt::Microsoft::UI::Xaml::LaunchActivatedEventArgs&)
+    {
+        try {
+            Launch();
+        }
+        catch (const hresult_error& ex) {
+            g_exitCode = 1;
+            spdlog::critical("Application launch failed. HRESULT: 0x{:08x}, message: {}",
+                             static_cast<unsigned int>(ex.code()), to_string(ex.message()));
+            Exit();
+        }
+        catch (const std::exception& ex) {
+            g_exitCode = 1;
+            spdlog::critical("Application launch failed: {}", ex.what());
+            Exit();
+        }
+    }
+
+private:
+    void Launch()
+    {
+        // XAML schema initialization requires a fully constructed Application.
+        spdlog::info("Initializing WinUI metadata.");
+        winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider::Initialize();
+        spdlog::info("Initializing WinUI control resources.");
+        Resources().MergedDictionaries().Append(
+            winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
+        spdlog::info("WinUI resources initialized.");
+
+        // This tray app must keep running when the settings window closes.
+        DispatcherShutdownMode(winrt::Microsoft::UI::Xaml::DispatcherShutdownMode::OnExplicitShutdown);
+
+        ModernUiCallbacks callbacks;
+        if (g_uiSmokeTest) {
+            callbacks.loadConfig = [] {
+                AppConfig config;
+                config.url = "mqtt://localhost:1883";
+                config.topics.push_back({"test/日本語", ""});
+                return config;
+            };
+            callbacks.saveConfig = [](auto&&, auto&&, auto&&) { return false; };
+            callbacks.loadPlacement = [] { return LoadSettingsWindowPlacement(GetModuleDirectory() / L"ui-smoke-state.json"); };
+            callbacks.savePlacement = [](const auto& placement) {
+                if (!SaveSettingsWindowPlacement(GetModuleDirectory() / L"ui-smoke-state.json", placement)) {
+                    throw std::runtime_error("Could not save UI smoke placement");
+                }
+            };
+        }
+        else {
+            callbacks.loadConfig = GetConfigSnapshot;
+            callbacks.saveConfig = SaveModernSettings;
+            const auto placementPath = g_appDataPaths.configDirectory / L"ui-state.json";
+            callbacks.loadPlacement = [placementPath] { return LoadSettingsWindowPlacement(placementPath); };
+            callbacks.savePlacement = [placementPath](const auto& placement) {
+                if (!SaveSettingsWindowPlacement(placementPath, placement)) {
+                    spdlog::warn("Could not save settings window placement.");
+                }
+            };
+        }
+        g_modernUi = std::make_unique<ModernUi>(std::move(callbacks));
+
+        if (g_uiSmokeTest) {
+            StartUiSmokeTest();
+            return;
+        }
+
+        if (!g_tray.Create(
+                g_instance,
+                [] { if (g_modernUi) g_modernUi->ShowSettings((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0); },
+                [] {
+                    spdlog::info("Exit selected from tray menu. Terminating...");
+                    winrt::Microsoft::UI::Xaml::Application::Current().Exit();
+                })) {
+            spdlog::error("Failed to create tray icon.");
+        }
+
+        StartConfigWatcherAsync(g_appDataPaths.configDirectory.wstring(), L"config.json");
+        g_mqttThread = std::make_unique<std::jthread>(MqttWorkerThread);
+        spdlog::info("Tray application ready.");
+    }
+
+    void StartUiSmokeTest()
+    {
+        smokeTimer = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+        smokeTimer.Interval(std::chrono::seconds(1));
+        smokeTimer.IsRepeating(true);
+        smokeTimer.Tick([this](auto&&, auto&&) {
+            try {
+                switch (smokeStep++) {
+                case 0:
+                    spdlog::info("UI smoke test: opening settings after windowless startup.");
+                    g_modernUi->ShowSettings(true);
+                    break;
+                case 1:
+                    if (!g_modernUi->IsDefaultLayoutReady()) throw std::runtime_error("Default settings layout is incorrect");
+                    {
+                        const auto hwnd = g_modernUi->SettingsHandle();
+                        check_bool(GetWindowRect(hwnd, &smokeBounds));
+                        check_bool(SetWindowPos(hwnd, nullptr, smokeBounds.left + 12, smokeBounds.top + 12,
+                            smokeBounds.right - smokeBounds.left - 40, smokeBounds.bottom - smokeBounds.top - 40,
+                            SWP_NOZORDER | SWP_NOACTIVATE));
+                        check_bool(GetWindowRect(hwnd, &smokeBounds));
+                    }
+                    break;
+                case 2:
+                    g_modernUi->CloseAll();
+                    break;
+                case 3:
+                    g_modernUi->ShowSettings();
+                    break;
+                case 4:
+                    if (!g_modernUi->IsSettingsReady()) throw std::runtime_error("Settings controls did not reload");
+                    {
+                        RECT restored{};
+                        check_bool(GetWindowRect(g_modernUi->SettingsHandle(), &restored));
+                        if (!EqualRect(&smokeBounds, &restored)) throw std::runtime_error("Window placement was not restored");
+                    }
+                    spdlog::info("UI smoke test: saved position and size restored.");
+                    g_modernUi->ShowSettings(true);
+                    break;
+                case 5:
+                    if (!g_modernUi->IsDefaultLayoutReady()) throw std::runtime_error("Window placement reset failed");
+                    spdlog::info("UI smoke test: default placement reset passed.");
+                    g_modernUi->CloseAll();
+                    break;
+                case 6:
+                    smokeTimer.Stop();
+                    g_exitCode = 0;
+                    spdlog::info("UI smoke test passed.");
+                    Exit();
+                    break;
+                }
+            }
+            catch (const hresult_error& ex) {
+                spdlog::error("UI smoke test failed. HRESULT: 0x{:08x}, message: {}",
+                              static_cast<unsigned int>(ex.code()), to_string(ex.message()));
+                smokeTimer.Stop();
+                Exit();
+            }
+            catch (const std::exception& ex) {
+                spdlog::error("UI smoke test failed: {}", ex.what());
+                smokeTimer.Stop();
+                Exit();
+            }
+        });
+        smokeTimer.Start();
+        spdlog::info("UI smoke test: waiting for UI dispatcher.");
+    }
+
+    winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider MetadataProvider()
+    {
+        if (!metadataProvider) {
+            metadataProvider = winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider();
+        }
+        return metadataProvider;
+    }
+
+    winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer smokeTimer{nullptr};
+    int smokeStep = 0;
+    RECT smokeBounds{};
+    winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider metadataProvider{nullptr};
+};
+
+}
+
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR commandLine, _In_ int) {
+    g_uiSmokeTest = std::string_view(commandLine) == "--ui-smoke-test";
+    g_exitCode = g_uiSmokeTest ? 1 : 0;
     init_apartment(apartment_type::single_threaded);
 
+    const HRESULT bootstrapResult = MddBootstrapInitialize2(
+        WINDOWSAPPSDK_RELEASE_MAJORMINOR,
+        WINDOWSAPPSDK_RELEASE_VERSION_TAG_W,
+        PACKAGE_VERSION{WINDOWSAPPSDK_RUNTIME_VERSION_UINT64},
+        MddBootstrapInitializeOptions_OnPackageIdentity_NOOP);
+    if (FAILED(bootstrapResult)) {
+        MessageBoxW(nullptr, L"Windows App SDK Runtimeを初期化できませんでした。",
+                    L"MTQQToaster", MB_ICONERROR | MB_OK);
+        uninit_apartment();
+        return static_cast<int>(bootstrapResult);
+    }
+
+    g_instance = hInstance;
+
 	// preventing multiple instances
-	HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\MQTTToasterMutex");
-	if (GetLastError() == ERROR_ALREADY_EXISTS) {
+	HANDLE hMutex = g_uiSmokeTest ? nullptr : CreateMutexW(NULL, TRUE, L"Global\\MQTTToasterMutex");
+	if (!g_uiSmokeTest && GetLastError() == ERROR_ALREADY_EXISTS) {
 		MessageBoxW(NULL, L"MQTT Toaster is already running.", L"MQTT Toaster", MB_ICONEXCLAMATION | MB_OK);
-		return 0;
+		MddBootstrapShutdown();
+        uninit_apartment();
+        return 0;
 	}
 
-    g_appDataPaths = GetAppDataPaths();
-    if (!InitializeAppData(g_appDataPaths)) {
-        MessageBoxW(NULL, L"アプリケーションデータフォルダーを初期化できませんでした。", L"MTQQToaster", MB_ICONERROR | MB_OK);
-        return 1;
+    if (g_uiSmokeTest) {
+        InitLogger(GetModuleDirectory() / L"ui-smoke.log", 1, 1);
+    }
+    else {
+        g_appDataPaths = GetAppDataPaths();
+        if (!InitializeAppData(g_appDataPaths)) {
+            MessageBoxW(NULL, L"アプリケーションデータフォルダーを初期化できませんでした。", L"MTQQToaster", MB_ICONERROR | MB_OK);
+            if (hMutex) CloseHandle(hMutex);
+            MddBootstrapShutdown();
+            uninit_apartment();
+            return 1;
+        }
+
+        const auto& configPath = g_appDataPaths.configPath;
+
+        size_t initLogSizeMb = 5, initLogMaxFiles = 3;
+        ReadLogConfigFirst(configPath, initLogSizeMb, initLogMaxFiles);
+        InitLogger(g_appDataPaths.logPath, initLogSizeMb, initLogMaxFiles);
+
+        spdlog::info("=== Application Started ===");
+        if (!LoadConfig(configPath, g_config)) {
+            SaveConfig(configPath, g_config);
+        }
     }
 
-    const std::wstring configFileName = L"config.json";
-    const auto& configPath = g_appDataPaths.configPath;
+    winrt::Microsoft::UI::Xaml::Application::Start([](auto&&) { make<App>(); });
 
-    size_t initLogSizeMb = 5, initLogMaxFiles = 3;
-    ReadLogConfigFirst(configPath, initLogSizeMb, initLogMaxFiles);
-    InitLogger(g_appDataPaths.logPath, initLogSizeMb, initLogMaxFiles);
-
-    spdlog::info("=== Application Started ===");
-    if (!LoadConfig(configPath, g_config)) {
-        SaveConfig(configPath, g_config);
+    if (g_modernUi) g_modernUi->CloseAll();
+    if (g_mqttThread) {
+        g_mqttThread->request_stop();
+        g_mqttThread->join();
+        g_mqttThread.reset();
     }
-
-    TrayIcon tray;
-    if (!tray.Create(hInstance, ShowSettingsDialog)) spdlog::error("Failed to create tray icon.");
-
-	// start WinRT-based config watcher
-    StartConfigWatcherAsync(g_appDataPaths.configDirectory.wstring(), configFileName);
-
-    std::jthread mqttThread(MqttWorkerThread);
-
-    MSG msg;
-    while (GetMessage(&msg, NULL, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-
-    mqttThread.request_stop(); mqttThread.join();
 
 	// Stop WinRT-based config watcher
 	StopConfigWatcher();
 
-    tray.Destroy();
+    g_tray.Destroy();
+    g_modernUi.reset();
+    if (hMutex) CloseHandle(hMutex);
     spdlog::info("=== Application Terminating ===");
     spdlog::shutdown();
 
+    MddBootstrapShutdown();
     uninit_apartment();
-    return 0;
+    return g_exitCode;
 }

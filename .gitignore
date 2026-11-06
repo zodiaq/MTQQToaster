@@ -56,6 +56,10 @@ rules.ninja
 # Dependencies installed by vcpkg
 vcpkg_installed/
 
+# Windows App SDK files restored by WinApp CLI
+/.winapp/
+/.winapp-tools/
+
 # Local samples
 /samples/
 

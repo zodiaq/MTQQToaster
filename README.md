@@ -22,6 +22,15 @@ CMake、Ninja、vcpkg、C++/WinRTを別途インストールする必要はあ�
 ライブラリは`vcpkg.json`に従って最初のCMake構成時に自動取得されます。初回はインターネット接続とダウンロード・ビルドの時間が必要です。
 vcpkgのclone、bootstrap、`vcpkg integrate install`、`VCPKG_ROOT`の手動設定は不要です。
 
+WinUI 3用のWindows App SDKはMicrosoftのWinApp CLIで復元します。初回だけ次を実行してください。
+
+```powershell
+winget install --id Microsoft.winappcli --source winget
+winapp restore
+```
+
+`winapp.yaml`がWindows App SDKと投影ヘッダーの版を固定します。CMake構成時に`.winapp`がなければ`winapp restore`を自動実行します。
+
 ### ビルドとテスト
 
 スタートメニューから **Developer PowerShell for VS 2026** を開き、リポジトリのディレクトリで実行します。
@@ -36,6 +45,7 @@ ctest --test-dir build -C Release --output-on-failure --no-tests=error
 EXEは`build/Release/MTQQToaster.exe`です。初回起動時にユーザー別のアプリデータフォルダーへ設定ファイルを作成します。トレイアイコンを右クリックして「設定...」を選び、MQTT接続とログ設定を入力してください。
 Debugの場合は、ビルドとテストの`Release`を`Debug`に置き換えてください。
 アプリと依存ライブラリはx64・静的CRT（Release: `/MT`、Debug: `/MTd`）でビルドします。
+unpackaged実行ではWindows App SDK Runtimeが必要です。`winapp restore`は開発機へ対応するランタイムも導入します。配布時はMicrosoftのWindows App Runtime installerをセットアップへ含めてください。
 
 プリセットを利用する場合（DebugとReleaseで構成・依存ライブラリを共有します）:
 
@@ -46,6 +56,15 @@ ctest --preset x64-release
 ```
 
 Debug用には`x64-debug`を指定します。プリセットのEXE出力先は`out/build/windows-x64/Release/`または`Debug/`です。
+
+対話可能なWindowsデスクトップで、UIの回帰テストを実行できます。
+
+```powershell
+$process = Start-Process .\out\build\windows-x64\Release\MTQQToaster.exe --ui-smoke-test -PassThru -Wait
+$process.ExitCode
+```
+
+ウィンドウなしの起動、設定画面の読み込み・中央配置・スクロール量・ログ3列配置、位置サイズの保存・復元・初期化、閉じた後の常駐、正常終了を検証します。成功時の終了コードは0、失敗は非0です。診断とテスト用の位置情報はEXEと同じフォルダーの`ui-smoke.log`、`ui-smoke-state.json`へ記録します。実設定にはアクセスせず、MQTT接続やトレイ登録も行いません。設定画面が一時的に表示されるため、通常のCTestとは別に実行します。
 
 ### 以前の構成で失敗していた場合
 
@@ -65,6 +84,10 @@ vcpkgが見つからない場合は、Visual Studio Installerで上記コンポ�
 ## Configuration
 Use **Settings...** in the tray menu to configure the MQTT broker, subscribed topics, and logging. The application persists these values in its per-user application data directory; direct JSON editing is not required.
 
+The settings window uses WinUI 3. The tray menu uses the native Win32 menu, and the notification-area icon uses `Shell_NotifyIcon`. Closing the settings window leaves the application running; use **Exit** in the tray menu to terminate it.
+
+設定画面は初回、マウスがあるモニターの作業領域中央に、内容に合わせたサイズで表示します。位置・サイズ（最大化状態を含む）は閉じるときに設定フォルダーの`ui-state.json`へ保存し、次回起動後も復元します。**Shiftを押しながらトレイの「設定...」を選ぶと位置・サイズを初期化**します。設定画面が開いている場合もリセットできます。画面より内容が大きい場合や手動で縮小した場合はスクロールできます。ログレベル・最大サイズ・保持数は横並びです。
+
 For an unpackaged build, the files are stored under `%LOCALAPPDATA%\MTQQToaster`. An MSIX-packaged build uses the package-managed `LocalFolder` and `LocalCacheFolder`. On first launch, an existing `config.json` beside the executable is imported for compatibility.
 
 - `mqtt_url`: The URL of the MQTT broker (e.g., mqtt://broker.hivemq.com:1883)
@@ -83,6 +106,7 @@ Runtime files are separated by purpose:
 
 - Visual Studio 2026 Community with Desktop development with C++ (MSVC, Windows SDK, CMake and vcpkg included)
 - Windows SDK C++/WinRT headers (for toast notifications and others)
+- Windows App SDK / WinUI 3 (restored by WinApp CLI according to `winapp.yaml`)
 - Automatically restored via vcpkg: mosquitto, spdlog, nlohmann/json and GoogleTest
 
 ## License

@@ -3,6 +3,8 @@
 #include <fstream>
 #include <cstdlib>
 #include <unordered_set>
+#include <algorithm>
+#include <stdexcept>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
 
@@ -23,6 +25,69 @@ using namespace Windows::Data::Xml::Dom;
 using namespace Windows::UI::Notifications;
 
 #define WM_TRAYICON (WM_USER + 1)
+
+std::optional<SettingsWindowPlacement> LoadSettingsWindowPlacement(const std::filesystem::path& path)
+{
+    try {
+        std::ifstream input(path);
+        if (!input) return std::nullopt;
+        const auto data = json::parse(input);
+        if (data.at("version") != 1) return std::nullopt;
+        SettingsWindowPlacement placement;
+        const auto readInt = [&data](const char* key) {
+            const auto& value = data.at(key);
+            if (!value.is_number_integer()) throw std::runtime_error("Invalid window geometry");
+            // Bound coordinates before constructing Win32 RECT values.
+            if (value.is_number_unsigned()) {
+                if (value.get<uint64_t>() > 1000000) throw std::runtime_error("Window geometry out of range");
+            }
+            else if (const auto number = value.get<int64_t>(); number < -1000000 || number > 1000000) {
+                throw std::runtime_error("Window geometry out of range");
+            }
+            return value.get<int>();
+        };
+        placement.x = readInt("x");
+        placement.y = readInt("y");
+        placement.width = readInt("width");
+        placement.height = readInt("height");
+        placement.maximized = data.value("maximized", false);
+        if (placement.width <= 0 || placement.height <= 0) return std::nullopt;
+        return placement;
+    }
+    catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+bool SaveSettingsWindowPlacement(const std::filesystem::path& path, const SettingsWindowPlacement& placement)
+{
+    try {
+        const json data{{"version", 1}, {"x", placement.x}, {"y", placement.y},
+                        {"width", placement.width}, {"height", placement.height},
+                        {"maximized", placement.maximized}};
+        std::ofstream output(path, std::ios::trunc);
+        if (!output) return false;
+        output << data.dump(2);
+        output.close();
+        return !output.fail();
+    }
+    catch (const std::exception&) {
+        return false;
+    }
+}
+
+SettingsWindowPlacement FitSettingsWindowToWorkArea(SettingsWindowPlacement placement, const RECT& workArea)
+{
+    const int width = (std::max)(1L, workArea.right - workArea.left);
+    const int height = (std::max)(1L, workArea.bottom - workArea.top);
+    placement.width = std::clamp(placement.width, 1, width);
+    placement.height = std::clamp(placement.height, 1, height);
+    placement.x = std::clamp(placement.x, static_cast<int>(workArea.left),
+                             static_cast<int>(workArea.right) - placement.width);
+    placement.y = std::clamp(placement.y, static_cast<int>(workArea.top),
+                             static_cast<int>(workArea.bottom) - placement.height);
+    return placement;
+}
 
 static std::filesystem::path GetModulePath()
 {
@@ -407,7 +472,7 @@ void ShowToast(const NotificationInfo& data) {
 }
 
 
-static void ToggleStartupRegistration() {
+void ToggleStartupRegistration() {
 	HKEY hKey;
 	if (RegOpenKeyExW(HKEY_CURRENT_USER, STARTUP_REGISTRY_PATH, 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
 		bool isRegistered = false;
@@ -429,7 +494,7 @@ static void ToggleStartupRegistration() {
 	}
 }
 
-static bool CheckStartupRegistration() {
+bool IsStartupRegistered() {
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, STARTUP_REGISTRY_PATH, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
         return false;
@@ -448,36 +513,41 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         tray = static_cast<TrayIcon*>(create->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(tray));
     }
-    if (msg == WM_TRAYICON && lParam == WM_RBUTTONUP) {
-        POINT pt;
-        GetCursorPos(&pt);
-        HMENU hMenu = LoadMenu(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDR_TRAYMENU));
-        HMENU hPopup = GetSubMenu(hMenu, 0);
-        SetForegroundWindow(hwnd);
+    if (msg == WM_TRAYICON && tray != nullptr) {
+        const UINT event = LOWORD(lParam);
+        if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            const HMENU menu = LoadMenuW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDR_TRAYMENU));
+            if (!menu) return 0;
+            const HMENU popup = GetSubMenu(menu, 0);
+            if (!popup) {
+                DestroyMenu(menu);
+                return 0;
+            }
 
-        // check start up registration
-		CheckMenuItem(hPopup, ID_STARTUP, CheckStartupRegistration() ? MF_BYCOMMAND | MF_CHECKED : MF_BYCOMMAND | MF_UNCHECKED);
+            CheckMenuItem(popup, ID_STARTUP,
+                          MF_BYCOMMAND | (IsStartupRegistered() ? MF_CHECKED : MF_UNCHECKED));
+            SetForegroundWindow(hwnd);
+            const int command = TrackPopupMenu(
+                popup, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                cursor.x, cursor.y, 0, hwnd, nullptr);
+            DestroyMenu(menu);
+            PostMessageW(hwnd, WM_NULL, 0, 0);
 
-        int cmd = TrackPopupMenu(hPopup, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
-        DestroyMenu(hMenu);
-
-        if (cmd == ID_EXIT) {
-            spdlog::info("Exit selected from tray menu. Terminating...");
-            PostQuitMessage(0);
-        }
-        else if (cmd == ID_STARTUP) {
-            // startup registration toggle
-			ToggleStartupRegistration();
-        }
-        else if (cmd == ID_SETTINGS && tray) {
-            tray->OpenSettings(hwnd);
+            if (command == ID_SETTINGS) tray->OpenSettings();
+            else if (command == ID_STARTUP) ToggleStartupRegistration();
+            else if (command == ID_EXIT) tray->ExitApplication();
+            return 0;
         }
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-bool TrayIcon::Create(HINSTANCE hInstance, std::function<void(HWND)> settingsHandler) {
+bool TrayIcon::Create(HINSTANCE hInstance, std::function<void()> settingsHandler,
+                      std::function<void()> exitHandler) {
     settingsHandler_ = std::move(settingsHandler);
+    exitHandler_ = std::move(exitHandler);
     WNDCLASSEXW wc = { 0 };
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = TrayWndProc;
@@ -489,28 +559,68 @@ bool TrayIcon::Create(HINSTANCE hInstance, std::function<void(HWND)> settingsHan
     hwnd = CreateWindowExW(0, wc.lpszClassName, _CRT_WIDE(MQTTTOASTER_DEFAULT_TITLE), 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, this);
     if (!hwnd) return false;
 
-    HICON hIcon = (HICON)LoadImage(
-        GetModuleHandle(nullptr),
-        MAKEINTRESOURCE(IDI_TRAYICON),
+    icon_ = static_cast<HICON>(LoadImageW(
+        hInstance,
+        MAKEINTRESOURCEW(IDI_TRAYICON),
         IMAGE_ICON,
-        GetSystemMetrics(SM_CXSMICON),  // 16x16
+        GetSystemMetrics(SM_CXSMICON),
         GetSystemMetrics(SM_CYSMICON),
-        0);
+        LR_DEFAULTCOLOR));
+    if (!icon_) {
+        DestroyWindow(hwnd);
+        hwnd = nullptr;
+        return false;
+    }
 
     nid.cbSize = sizeof(NOTIFYICONDATAW);
     nid.hWnd = hwnd;
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = hIcon;
+    nid.hIcon = icon_;
     wcscpy_s(nid.szTip, _CRT_WIDE(MQTTTOASTER_DEFAULT_TITLE));
 
-    return Shell_NotifyIconW(NIM_ADD, &nid);
+    if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
+        DestroyIcon(icon_);
+        icon_ = nullptr;
+        DestroyWindow(hwnd);
+        hwnd = nullptr;
+        return false;
+    }
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
+    return true;
 }
 
-void TrayIcon::OpenSettings(HWND owner) const {
-    if (settingsHandler_) {
-        settingsHandler_(owner);
+void TrayIcon::OpenSettings() const noexcept {
+    try {
+        if (settingsHandler_) settingsHandler_();
+    }
+    catch (const winrt::hresult_error& ex) {
+        spdlog::error("Tray menu error. HRESULT: 0x{:08x}, message: {}",
+                      static_cast<unsigned int>(ex.code()), winrt::to_string(ex.message()));
+    }
+    catch (const std::exception& ex) {
+        spdlog::error("Tray menu error: {}", ex.what());
+    }
+    catch (...) {
+        spdlog::error("Tray menu error: unknown exception");
+    }
+}
+
+void TrayIcon::ExitApplication() const noexcept {
+    try {
+        if (exitHandler_) exitHandler_();
+    }
+    catch (const winrt::hresult_error& ex) {
+        spdlog::error("Exit command error. HRESULT: 0x{:08x}, message: {}",
+                      static_cast<unsigned int>(ex.code()), winrt::to_string(ex.message()));
+    }
+    catch (const std::exception& ex) {
+        spdlog::error("Exit command error: {}", ex.what());
+    }
+    catch (...) {
+        spdlog::error("Exit command error: unknown exception");
     }
 }
 
@@ -519,5 +629,9 @@ void TrayIcon::Destroy() {
         Shell_NotifyIconW(NIM_DELETE, &nid);
         DestroyWindow(hwnd);
         hwnd = NULL;
+    }
+    if (icon_) {
+        DestroyIcon(icon_);
+        icon_ = nullptr;
     }
 }

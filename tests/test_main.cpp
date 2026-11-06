@@ -5,6 +5,45 @@
 // テスト用のダミーグローバルフラグ
 std::atomic<bool> g_running{ true };
 
+class WindowPlacementTest : public ::testing::Test {
+protected:
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+        (L"MTQQToaster-placement-" + std::to_wstring(GetCurrentProcessId()) + L".json");
+    void TearDown() override {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
+
+TEST_F(WindowPlacementTest, RoundTripNegativeMonitorCoordinates) {
+    const SettingsWindowPlacement expected{-1700, 120, 760, 900, true};
+    ASSERT_TRUE(SaveSettingsWindowPlacement(path, expected));
+    ASSERT_EQ(LoadSettingsWindowPlacement(path), expected);
+}
+
+TEST_F(WindowPlacementTest, RejectsMissingAndMalformedGeometry) {
+    EXPECT_FALSE(LoadSettingsWindowPlacement(path));
+    for (const char* input : {
+        "not json", R"({"version":1})",
+        R"({"version":1,"x":0,"y":0,"width":-1,"height":900})",
+        R"({"version":1,"x":0,"y":0,"width":660.5,"height":900})",
+        R"({"version":1,"x":18446744073709551615,"y":0,"width":660,"height":900})",
+        R"({"version":2,"x":0,"y":0,"width":660,"height":900})"}) {
+        { std::ofstream output(path); output << input; }
+        EXPECT_FALSE(LoadSettingsWindowPlacement(path)) << input;
+    }
+}
+
+TEST_F(WindowPlacementTest, RecoversOffscreenAndOversizedWindow) {
+    const RECT workArea{-1920, 40, 0, 1080};
+    EXPECT_EQ(FitSettingsWindowToWorkArea({4000, 4000, 660, 800}, workArea),
+              (SettingsWindowPlacement{-660, 280, 660, 800}));
+    EXPECT_EQ(FitSettingsWindowToWorkArea({-4000, -4000, 5000, 4000}, workArea),
+              (SettingsWindowPlacement{-1920, 40, 1920, 1040}));
+    EXPECT_EQ(FitSettingsWindowToWorkArea({-1800, 80, 660, 800}, workArea),
+              (SettingsWindowPlacement{-1800, 80, 660, 800}));
+}
+
 // 2. 完全な JSON ペイロードのパース
 TEST(JsonParserTest, ParseFullJson) {
     std::string jsonStr = R"({
