@@ -4,5 +4,26 @@
 #define IDR_TRAYMENU      102
 #define ID_STARTUP        2001
 #define ID_EXIT           2002
+#define ID_SETTINGS       2003
+
+#define IDD_SETTINGS      3001
+#define IDC_MQTT_URL      3101
+#define IDC_MQTT_TOPICS   3102
+#define IDC_MQTT_USER     3103
+#define IDC_MQTT_PASS     3104
+#define IDC_LOG_LEVEL     3105
+#define IDC_LOG_SIZE      3106
+#define IDC_LOG_FILES     3107
+#define IDC_TOPIC_LIST    3108
+#define IDC_TOPIC_ADD     3109
+#define IDC_TOPIC_EDIT    3110
+#define IDC_TOPIC_DELETE  3111
+
+#define IDD_TOPIC         3201
+#define IDC_TOPIC_NAME    3202
+#define IDC_TOPIC_IMAGE   3203
+#define IDC_IMAGE_BROWSE  3204
+#define IDC_IMAGE_CLEAR   3205
+#define IDC_IMAGE_STATUS  3206
 
 #define IDS_APP_NAME      1003

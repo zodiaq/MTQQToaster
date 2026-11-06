@@ -33,7 +33,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-EXEは`build/Release/MTQQToaster.exe`です。`config.sample.json`をEXEと同じディレクトリへ`config.json`としてコピーし、設定してから起動します。
+EXEは`build/Release/MTQQToaster.exe`です。初回起動時にユーザー別のアプリデータフォルダーへ設定ファイルを作成します。トレイアイコンを右クリックして「設定...」を選び、MQTT接続とログ設定を入力してください。
 Debugの場合は、ビルドとテストの`Release`を`Debug`に置き換えてください。
 アプリと依存ライブラリはx64・静的CRT（Release: `/MT`、Debug: `/MTd`）でビルドします。
 
@@ -63,12 +63,21 @@ vcpkgが見つからない場合は、Visual Studio Installerで上記コンポ�
 参考: [VS2026のC++コンポーネント](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-community?view=vs-2026)、[vcpkgのCMake連携](https://learn.microsoft.com/en-us/vcpkg/users/buildsystems/cmake-integration)、[CMakeのVS2026対応](https://cmake.org/cmake/help/latest/generator/Visual%20Studio%2018%202026.html)。
 
 ## Configuration
-Edit the `config.json` file to configure the MQTT broker settings, topics to subscribe to, and other options. The configuration file should be placed in the same directory as the executable.
+Use **Settings...** in the tray menu to configure the MQTT broker, subscribed topics, and logging. The application persists these values in its per-user application data directory; direct JSON editing is not required.
+
+For an unpackaged build, the files are stored under `%LOCALAPPDATA%\MTQQToaster`. An MSIX-packaged build uses the package-managed `LocalFolder` and `LocalCacheFolder`. On first launch, an existing `config.json` beside the executable is imported for compatibility.
+
 - `mqtt_url`: The URL of the MQTT broker (e.g., mqtt://broker.hivemq.com:1883)
-- `mqtt_topics`: A list of topics to subscribe to. Wildcards are supported (e.g., ["home/+/temperature"])
+- `mqtt_topics`: A list of topic objects. Each topic can have one application-managed default toast image. Payload images take precedence.
 - `mqtt_user`, `mqtt_pass`: Optional username and password for the MQTT broker
 - `log_level`: Logging level (e.g., "INFO", "DEBUG", "ERROR")
 - `log_max_size_mb`, `log_max_files`: Logging configuration for file size and number of log rotation files
+
+Runtime files are separated by purpose:
+
+- `config.json`: persistent application data
+- `topic-image-*`: per-topic default images copied beside `config.json`; unreferenced managed images are removed
+- `Logs/app.log`: cache data that can be recreated
 
 ## Dependencies
 

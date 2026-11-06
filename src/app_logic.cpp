@@ -1,6 +1,8 @@
 #include "app_logic.h"
 #include "resource.h"
 #include <fstream>
+#include <cstdlib>
+#include <unordered_set>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
 
@@ -10,6 +12,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Data.Xml.Dom.h>
 #include <winrt/Windows.UI.Notifications.h>
+#include <winrt/Windows.Storage.h>
 
 #define MQTTTOASTER_REGVAL_NAME L"MQTTToaster"
 #define STARTUP_REGISTRY_PATH L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
@@ -20,7 +23,6 @@ using namespace Windows::Data::Xml::Dom;
 using namespace Windows::UI::Notifications;
 
 #define WM_TRAYICON (WM_USER + 1)
-#define IDM_EXIT    1001
 
 static std::filesystem::path GetModulePath()
 {
@@ -44,6 +46,55 @@ static std::filesystem::path GetModulePath()
 std::filesystem::path GetModuleDirectory()
 {
     return GetModulePath().parent_path();
+}
+
+AppStoragePaths GetAppDataPaths()
+{
+    AppStoragePaths paths;
+    try {
+        const auto appData = winrt::Windows::Storage::ApplicationData::Current();
+        paths.configDirectory = appData.LocalFolder().Path().c_str();
+        paths.cacheDirectory = appData.LocalCacheFolder().Path().c_str();
+    }
+    catch (const winrt::hresult_error&) {
+        wchar_t* localAppData = nullptr;
+        size_t length = 0;
+        if (_wdupenv_s(&localAppData, &length, L"LOCALAPPDATA") == 0 && localAppData != nullptr) {
+            paths.configDirectory = std::filesystem::path(localAppData) / L"MTQQToaster";
+            free(localAppData);
+        }
+        else {
+            paths.configDirectory = GetModuleDirectory();
+        }
+        paths.cacheDirectory = paths.configDirectory;
+    }
+
+    paths.toastAssetsDirectory = paths.configDirectory / L"ToastAssets";
+    paths.configPath = paths.configDirectory / L"config.json";
+    paths.logPath = paths.cacheDirectory / L"Logs" / L"app.log";
+    return paths;
+}
+
+bool InitializeAppData(const AppStoragePaths& paths)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(paths.configDirectory, ec);
+    if (ec) return false;
+    std::filesystem::create_directories(paths.logPath.parent_path(), ec);
+    if (ec) return false;
+    std::filesystem::create_directories(paths.toastAssetsDirectory, ec);
+    if (ec) return false;
+
+    if (std::filesystem::exists(paths.configPath, ec)) return true;
+
+    const auto moduleDirectory = GetModuleDirectory();
+    const auto legacyConfig = moduleDirectory / L"config.json";
+    const auto sampleConfig = moduleDirectory / L"config.sample.json";
+    const auto source = std::filesystem::exists(legacyConfig, ec) ? legacyConfig : sampleConfig;
+    if (!std::filesystem::exists(source, ec)) return true;
+
+    std::filesystem::copy_file(source, paths.configPath, std::filesystem::copy_options::none, ec);
+    return !ec;
 }
 
 // MQTTからのペイロード（JSON or Text）をパースする関数
@@ -84,7 +135,7 @@ void ReadLogConfigFirst(const std::filesystem::path& configPath, size_t& outSize
 
 void InitLogger(const std::filesystem::path& logPath, size_t maxMb, size_t maxFiles) {
     try {
-        spdlog::filename_t logPathStr(logPath.string());
+        spdlog::filename_t logPathStr(logPath.native());
         size_t maxSizeBytes = maxMb * 1024 * 1024;
 
         auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(logPathStr, maxSizeBytes, maxFiles);
@@ -126,11 +177,23 @@ bool LoadConfig(const std::filesystem::path& configPath, AppConfig& outConfig) {
             newConfig.url = j["mqtt_url"].get<std::string>();
         }
         if (j.contains("mqtt_topics") && j["mqtt_topics"].is_array()) {
-			std::vector<std::string> topics;
+			std::vector<TopicConfig> topics;
 			for (const auto& topic : j["mqtt_topics"])
             {
 				if (topic.is_string()) {
-					topics.push_back(topic.get<std::string>());
+					topics.push_back({topic.get<std::string>(), ""});
+				}
+                else if (topic.is_object() && topic.contains("topic") && topic["topic"].is_string()) {
+                    TopicConfig topicConfig;
+                    topicConfig.topic = topic["topic"].get<std::string>();
+                    if (topic.contains("image") && topic["image"].is_string()) {
+                        const auto image = std::filesystem::path(winrt::to_hstring(topic["image"].get<std::string>()).c_str());
+                        const auto fileName = image.filename().wstring();
+                        if (image == image.filename() && fileName.starts_with(L"topic-image-")) {
+                            topicConfig.image = winrt::to_string(winrt::hstring(fileName));
+                        }
+                    }
+                    if (!topicConfig.topic.empty()) topics.push_back(std::move(topicConfig));
 				}
             }
 			if (!topics.empty()) {
@@ -151,6 +214,97 @@ bool LoadConfig(const std::filesystem::path& configPath, AppConfig& outConfig) {
     catch (const std::exception& ex) {
         spdlog::error("JSON parse error: {}", ex.what());
         return false;
+    }
+}
+
+bool SaveConfig(const std::filesystem::path& configPath, const AppConfig& config) {
+    if (config.url.empty() || config.topics.empty() || config.maxLogSizeMb == 0 || config.maxLogFiles == 0) {
+        return false;
+    }
+
+    json topicList = json::array();
+    for (const auto& topic : config.topics) {
+        topicList.push_back({{"topic", topic.topic}, {"image", topic.image}});
+    }
+
+    json j = {
+        {"mqtt_url", config.url},
+        {"mqtt_topics", std::move(topicList)},
+        {"mqtt_user", config.user},
+        {"mqtt_pass", config.pass},
+        {"log_level", config.logLevel},
+        {"log_max_size_mb", config.maxLogSizeMb},
+        {"log_max_files", config.maxLogFiles}
+    };
+
+    const auto temporaryPath = configPath.parent_path() / (configPath.filename().wstring() + L".tmp");
+    try {
+        std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+        if (!output.is_open()) return false;
+        output << j.dump(2) << '\n';
+        output.close();
+        if (!output) return false;
+
+        if (!MoveFileExW(temporaryPath.c_str(), configPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            std::error_code ec;
+            std::filesystem::remove(temporaryPath, ec);
+            return false;
+        }
+        return true;
+    }
+    catch (const std::exception&) {
+        std::error_code ec;
+        std::filesystem::remove(temporaryPath, ec);
+        return false;
+    }
+}
+
+bool CopyToastImage(const std::filesystem::path& configDirectory,
+                    const std::filesystem::path& sourcePath,
+                    std::string& outFileName) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(sourcePath, ec) || ec) return false;
+
+    auto extension = sourcePath.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::towlower);
+    if (extension != L".png" && extension != L".jpg" && extension != L".jpeg" && extension != L".gif") {
+        return false;
+    }
+
+    std::filesystem::create_directories(configDirectory, ec);
+    if (ec) return false;
+
+    const auto prefix = L"topic-image-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    std::filesystem::path destination;
+    for (unsigned int suffix = 0; suffix < 100; ++suffix) {
+        const auto name = prefix + (suffix == 0 ? L"" : L"-" + std::to_wstring(suffix)) + extension;
+        destination = configDirectory / name;
+        if (!std::filesystem::exists(destination, ec)) break;
+    }
+
+    std::filesystem::copy_file(sourcePath, destination, std::filesystem::copy_options::none, ec);
+    if (ec) return false;
+    outFileName = winrt::to_string(winrt::hstring(destination.filename().wstring()));
+    return true;
+}
+
+void RemoveUnusedToastImages(const std::filesystem::path& configDirectory,
+                             const std::vector<TopicConfig>& topics) {
+    std::unordered_set<std::wstring> usedFiles;
+    for (const auto& topic : topics) {
+        if (!topic.image.empty()) {
+            usedFiles.insert(winrt::to_hstring(topic.image).c_str());
+        }
+    }
+
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(configDirectory, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const auto fileName = it->path().filename().wstring();
+        if (fileName.starts_with(L"topic-image-") && !usedFiles.contains(fileName)) {
+            std::filesystem::remove(it->path(), ec);
+            ec.clear();
+        }
     }
 }
 
@@ -181,10 +335,20 @@ std::wstring ResolveImagePath(const std::string& imageUrl) {
         // パース失敗した場合はファイルパスとみなして後続の処理へ
     }
 
-    // 2. std::filesystem でパスを解決（相対パスならモジュールディレクトリ基準）
+    if (wPath.starts_with(L"ms-appx:///") || wPath.starts_with(L"ms-appdata:///")) {
+        return wPath.c_str();
+    }
+
+    // 2. std::filesystem でパスを解決（相対パスなら管理下のToastAssetsを優先）
     std::filesystem::path targetPath(wPath.c_str());
     if (targetPath.is_relative()) {
-        targetPath = GetModuleDirectory() / targetPath;
+        const auto paths = GetAppDataPaths();
+        const auto configuredImage = paths.configDirectory / targetPath;
+        const auto appDataPath = paths.toastAssetsDirectory / targetPath;
+        std::error_code ec;
+        if (std::filesystem::exists(configuredImage, ec)) targetPath = configuredImage;
+        else if (std::filesystem::exists(appDataPath, ec)) targetPath = appDataPath;
+        else targetPath = GetModuleDirectory() / targetPath;
     }
 
     // 3. ローカル/UNCパスから安全に file:/// URI を作成
@@ -278,6 +442,12 @@ static bool CheckStartupRegistration() {
 
 // TrayIcon 実装
 static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    TrayIcon* tray = reinterpret_cast<TrayIcon*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        const auto create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        tray = static_cast<TrayIcon*>(create->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(tray));
+    }
     if (msg == WM_TRAYICON && lParam == WM_RBUTTONUP) {
         POINT pt;
         GetCursorPos(&pt);
@@ -299,11 +469,15 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             // startup registration toggle
 			ToggleStartupRegistration();
         }
+        else if (cmd == ID_SETTINGS && tray) {
+            tray->OpenSettings(hwnd);
+        }
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-bool TrayIcon::Create(HINSTANCE hInstance) {
+bool TrayIcon::Create(HINSTANCE hInstance, std::function<void(HWND)> settingsHandler) {
+    settingsHandler_ = std::move(settingsHandler);
     WNDCLASSEXW wc = { 0 };
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = TrayWndProc;
@@ -332,6 +506,12 @@ bool TrayIcon::Create(HINSTANCE hInstance) {
     wcscpy_s(nid.szTip, _CRT_WIDE(MQTTTOASTER_DEFAULT_TITLE));
 
     return Shell_NotifyIconW(NIM_ADD, &nid);
+}
+
+void TrayIcon::OpenSettings(HWND owner) const {
+    if (settingsHandler_) {
+        settingsHandler_(owner);
+    }
 }
 
 void TrayIcon::Destroy() {

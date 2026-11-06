@@ -50,6 +50,9 @@ target_link_libraries(MTQQToasterLib
         nlohmann_json::nlohmann_json
         windowsapp
         Shell32
+        Comdlg32
+        Windowscodecs
+        Gdi32
         User32
         Kernel32       # 明示的に Kernel32 を追加
         Advapi32       # mosquitto が使用する標準 Windows サービス API
@@ -57,14 +60,22 @@ target_link_libraries(MTQQToasterLib
 )
 
 target_compile_options(MTQQToasterLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
+target_compile_definitions(MTQQToasterLib PUBLIC SPDLOG_WCHAR_FILENAMES)
 
 # 2. 本番用 EXE
 add_executable(MTQQToaster WIN32
     src/main.cpp
     resources/app.rc
 )
+set_source_files_properties(resources/app.rc PROPERTIES COMPILE_FLAGS "/c65001")
+target_include_directories(MTQQToaster PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 target_link_libraries(MTQQToaster PRIVATE MTQQToasterLib)
 set_target_properties(MTQQToaster PROPERTIES WIN32_EXECUTABLE TRUE)
+add_custom_command(TARGET MTQQToaster POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/config.sample.json
+        $<TARGET_FILE_DIR:MTQQToaster>/config.sample.json
+)
 
 # 3. テスト用 EXE
 add_executable(MTQQToasterTests

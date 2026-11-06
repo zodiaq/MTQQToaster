@@ -9,7 +9,7 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 * **Language / Runtime**: C++23 (MSVC / C++/WinRT)
 * **Execution Mode**: System tray resident application
 * **MQTT Worker Thread**: Handles broker communication and event loop processing using `libmosquitto`
-* **File Watcher Thread**: Monitors changes to `config.json` (hot reload) using `ReadDirectoryChangesW` (Windows Native API)
+* **Configuration Watcher**: Monitors changes to `config.json` using `Windows.Storage.Search.StorageFileQueryResult`.
 
 ---
 
@@ -23,7 +23,7 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 * With image: `ToastImageAndText01`
 
 
-* **Image Display**: Placing an image file next to the exe and passing the filename in the payload displays it inline within the toast.
+* **Image Display**: Each subscribed topic can have one default image. An image in the MQTT payload takes precedence; otherwise the matching topic's configured image is used. Selected files are copied beside `config.json`, and unreferenced managed images are removed after a successful save.
 
 ### 2.2 MQTT Communication Feature
 
@@ -33,7 +33,9 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 
 ### 2.3 Configuration and Hot Reload Feature
 
-* **Configuration File**: Loaded from `config.json` placed in the same directory as the exe.
+* **Settings UI**: The tray menu opens a native Win32 settings dialog for MQTT connection, topics, credentials, and logging.
+* **Configuration File**: The UI persists settings to the per-user application data directory. JSON remains an internal persistence format.
+* **Legacy Migration**: On first launch, an existing `config.json` beside the executable is copied to the new location. Otherwise `config.sample.json` is used when available.
 * **Dynamic Reload**: Immediately detects modifications and saves to `config.json` at the kernel level.
 * Automatically reconnects to MQTT if connection info (Host, Port, Topic, etc.) changes.
 * Immediately updates log output upon log level changes without restarting.
@@ -41,7 +43,7 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 ### 2.4 Log Output & Rotation Feature
 
 * **Library**: `spdlog` (Header-only / `rotating_file_sink`)
-* **Output Destination**: `app.log` in the same directory as the exe
+* **Output Destination**: `Logs/app.log` in the per-user cache directory
 * **Automatic Rotation**: Rotates files and automatically deletes old logs when the set MB size limit is exceeded (preventing disk space exhaustion).
 * **Log Levels**: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `NONE`
 
@@ -49,18 +51,21 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 * **Resident Display**: Displays an icon in the system tray (default is the standard Windows app icon).
 * **Right-Click Menu**
 	* "Add to Startup" Register/unregister startup
+	* "Settings..." Open the settings dialog
 	* "Exit" Exit the application
 
 ---
 
 ## 3. Configuration File Specification (`config.json`)
 
-Place it in the same directory as the exe.
+The application manages this file. For unpackaged builds it is stored under `%LOCALAPPDATA%\MTQQToaster`; MSIX builds use the package-managed `LocalFolder`.
 
 ```json
 {
   "mqtt_url": "mqtt://10.0.0.1:1883",
-  "mqtt_topics": ["windows/notification"],
+  "mqtt_topics": [
+    { "topic": "windows/notification", "image": "topic-image-1234-5678.png" }
+  ],
   "mqtt_user": "",
   "mqtt_pass": "",
   "log_level": "INFO",
@@ -75,7 +80,7 @@ Place it in the same directory as the exe.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `mqtt_url` | string | `"mqtt://127.0.0.1:1883"` | URL of the MQTT broker |
-| `mqtt_topics` | array | `["windows/notification", "home/+/temperature" ]` | Array of MQTT topics to subscribe to. Wildcards are supported |
+| `mqtt_topics` | array | `[{"topic":"windows/notification","image":""}]` | Subscriptions and optional application-managed default images. Wildcards are supported |
 | `mqtt_user` | string | `""` | MQTT authentication username (empty string if not needed) |
 | `mqtt_pass` | string | `""` | MQTT authentication password (empty string if not needed) |
 | `log_level` | string | `"INFO"` | Log output level (`TRACE` / `DEBUG` / `INFO` / `WARN` / `ERROR` / `NONE`) |
@@ -101,7 +106,7 @@ Specification for the Payload sent via `mqtt.publish` from HA, etc.
 
 * `title` (mandatory): Title of the notification (defaults to `"MQTT Toaster"` if omitted).
 * `message` (mandatory): Body text of the notification.
-* `image` (optional): Image filename (displays text-only toast if omitted). The image file must be placed in the same directory as the exe.
+* `image` (optional): Image filename or supported application URI. Relative filenames resolve against `ToastAssets` first, then the executable directory for backward compatibility.
 
 ### 4.2 Plain Text Format
 
