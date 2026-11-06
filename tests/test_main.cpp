@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <fstream>
-#include "../app_logic.h"
+#include "app_logic.h"
 
 // テスト用のダミーグローバルフラグ
 std::atomic<bool> g_running{ true };

@@ -1,4 +1,5 @@
 #include "app_logic.h"
+#include "resource.h"
 #include <fstream>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")

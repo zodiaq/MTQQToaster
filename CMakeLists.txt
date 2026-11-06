@@ -33,7 +33,14 @@ enable_testing()
 
 # 1. ロジック部（静的ライブラリ）
 add_library(MTQQToasterLib STATIC
-    app_logic.cpp
+    src/app_logic.cpp
+)
+
+target_include_directories(MTQQToasterLib
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources
 )
 
 target_link_libraries(MTQQToasterLib
@@ -53,8 +60,8 @@ target_compile_options(MTQQToasterLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
 
 # 2. 本番用 EXE
 add_executable(MTQQToaster WIN32
-    main.cpp
-    app.rc
+    src/main.cpp
+    resources/app.rc
 )
 target_link_libraries(MTQQToaster PRIVATE MTQQToasterLib)
 set_target_properties(MTQQToaster PROPERTIES WIN32_EXECUTABLE TRUE)

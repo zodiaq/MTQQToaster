@@ -13,10 +13,10 @@
 
 ## コードの所在
 
-- `main.cpp`: 起動、STAメッセージループ、MQTTワーカー、WinRT設定監視、終了処理。
-- `app_logic.h` / `app_logic.cpp`: 設定、ペイロード変換、ログ、通知、画像パス、トレイ、スタートアップ登録。
+- `src/main.cpp`: 起動、STAメッセージループ、MQTTワーカー、WinRT設定監視、終了処理。
+- `include/app_logic.h` / `src/app_logic.cpp`: 設定、ペイロード変換、ログ、通知、画像パス、トレイ、スタートアップ登録。
 - `tests/test_main.cpp`: GoogleTestによるペイロード変換と設定読み込みのテスト。
-- `app.rc` / `resource.h` / `tray.ico`: Windowsリソース。
+- `resources/app.rc` / `resources/resource.h` / `resources/tray.ico`: Windowsリソース。
 - `config.sample.json`: 設定例。実行時の設定とログはEXEのディレクトリを基準とする。
 
 ## 実装の基準

@@ -1,10 +1,10 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <filesystem>
 #include <windows.h>
 #include <spdlog/spdlog.h>
-#include "resource.h"
 
 #define MQTTTOASTER_DEFAULT_TITLE "MQTT Toaster"
 
