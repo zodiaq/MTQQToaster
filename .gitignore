@@ -33,6 +33,37 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
+# CMake / Ninja build files
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+install_manifest.txt
+compile_commands.json
+/Testing/
+/_CPack_Packages/
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# Dependencies installed by vcpkg
+vcpkg_installed/
+
+# Temporary files and editor backups
+[Tt]mp/
+[Tt]emp/
+*.temp
+*.bak
+*.swp
+*.swo
+
 # Visual Studio 2015/2017 cache/options directory
 .vs/
 # Uncomment if you have tasks that create the project's static files in wwwroot
