@@ -36,3 +36,17 @@ Edit the `config.json` file to configure the MQTT broker settings, topics to sub
 ## License
 MTQQToaster is licensed under the MIT License. See the LICENSE file for more information.
 For the licenses of the dependencies used in this project, please refer to their respective documentation.
+
+## AI-assisted development
+
+[AGENTS.md](AGENTS.md) contains repository instructions for C++23, Win32, and C++/WinRT development.
+The repository skill [cpp-winrt-development](.agents/skills/cpp-winrt-development/SKILL.md) covers implementation, troubleshooting, and review, with references for [building and testing](.agents/skills/cpp-winrt-development/references/build-and-test.md) and [Windows runtime behavior](.agents/skills/cpp-winrt-development/references/windows-runtime.md).
+
+Codex discovers project skills in `.agents/skills/`. Invoke it explicitly with `$cpp-winrt-development`, for example:
+
+```text
+$cpp-winrt-development 設定監視の終了処理を確認して、必要な修正と検証を行って
+```
+
+Start a new session in this repository to load the new repository instructions. If the skill does not appear, restart Codex.
+See the official documentation for [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md) and [skills](https://learn.chatgpt.com/docs/build-skills).
