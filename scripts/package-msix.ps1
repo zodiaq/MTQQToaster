@@ -4,7 +4,7 @@ param(
     [ValidatePattern('^[A-Za-z0-9.-]{3,50}$')][string]$IdentityName = 'MTQQToaster',
     [ValidateNotNullOrEmpty()][string]$Publisher = 'CN=MTQQToaster Development',
     [ValidateNotNullOrEmpty()][string]$PublisherDisplayName = 'MTQQToaster',
-    [ValidatePattern('^[1-9][0-9]*\.[0-9]+\.[0-9]+\.[0-9]+$')][string]$Version = '1.0.0.0'
+    [ValidatePattern('^[1-9][0-9]*\.[0-9]+\.[0-9]+\.[0-9]+$')][string]$Version = (& (Join-Path $PSScriptRoot 'get-version.ps1'))
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -46,23 +46,26 @@ try {
     $manifest.Package.Properties.PublisherDisplayName = $PublisherDisplayName
     $manifest.Save((Join-Path $stage 'AppxManifest.xml'))
 
-    # Use the opaque package artwork so it remains visible on light and dark backgrounds.
+    # Preserve artwork transparency and supply high-DPI assets instead of upscaling small logos.
     Add-Type -AssemblyName System.Drawing
     foreach ($asset in @(@('StoreLogo', 50), @('Square44x44Logo', 44), @('Square150x150Logo', 150))) {
-        $size = [int]$asset[1]
+      foreach ($scale in @(100, 200, 400)) {
+        $size = [int]($asset[1] * $scale / 100)
         $icon = [System.Drawing.Image]::FromFile((Join-Path $root 'resources/package-icon.png'))
         try {
             $bitmap = [System.Drawing.Bitmap]::new($size, $size)
             try {
                 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
                 try {
-                    $graphics.Clear([System.Drawing.Color]::FromArgb(255, 37, 37, 37))
+                    $graphics.Clear([System.Drawing.Color]::Transparent)
                     $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
                     $graphics.DrawImage($icon, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
                 } finally { $graphics.Dispose() }
-                $bitmap.Save((Join-Path $stage ('Assets/' + $asset[0] + '.png')), [System.Drawing.Imaging.ImageFormat]::Png)
+                $suffix = if ($scale -eq 100) { '' } else { ".scale-$scale" }
+                $bitmap.Save((Join-Path $stage ('Assets/' + $asset[0] + $suffix + '.png')), [System.Drawing.Imaging.ImageFormat]::Png)
             } finally { $bitmap.Dispose() }
         } finally { $icon.Dispose() }
+      }
     }
     $package = Join-Path $output "$IdentityName`_$Version`_x64.msix"
     & (Join-Path $sdk.FullName 'x64/MakeAppx.exe') pack /d $stage /p $package /o

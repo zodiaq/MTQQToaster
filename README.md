@@ -19,7 +19,7 @@ Windows 10 version 1809以降／Windows 11（x64）を対象とします。MQTT 
 
 - **使う** — [操作マニュアル](docs/user-guide.md)：初期設定、画像、自動起動、ログ、困ったとき。
 - **動作を確認する** — [現行仕様](SPECIFICATION.md)、[設定リファレンス](docs/reference/configuration.md)、[メッセージ形式](docs/reference/payload.md)。
-- **開発する** — [ビルド](docs/development/build.md)、[テスト](docs/development/testing.md)、[実装構成](docs/development/architecture.md)、[MQTT通信層](docs/mqtt-transport.md)。
+- **開発する** — [ビルド](docs/development/build.md)、[バージョン管理](docs/development/versioning.md)、[テスト](docs/development/testing.md)、[実装構成](docs/development/architecture.md)、[MQTT通信層](docs/mqtt-transport.md)。
 - **経緯を調べる** — [設計判断・検討記録](docs/decisions/README.md)、[検証記録](docs/validation/README.md)。
 - **文書を更新する** — [構成と管理方針](docs/README.md)。
 - **AIと開発する** — [リポジトリ指示](AGENTS.md)、[C++/WinRT開発スキル](.agents/skills/cpp-winrt-development/SKILL.md)。

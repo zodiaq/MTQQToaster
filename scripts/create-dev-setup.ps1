@@ -5,7 +5,12 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path $PSScriptRoot -Parent
 
-& (Join-Path $PSScriptRoot 'package-msix.ps1')
+$version = & (Join-Path $PSScriptRoot 'get-version.ps1')
+$archive = Join-Path $root "out/setup/MTQQToaster-$version-x64-setup.zip"
+if (Test-Path -LiteralPath $archive) {
+    throw 'Setup already exists. Increment the build version before creating another setup.'
+}
+& (Join-Path $PSScriptRoot 'package-msix.ps1') -Version $version
 
 # Keep the private key in the current user's personal store, never in the ZIP.
 $subject = 'CN=MTQQToaster Development'
@@ -27,7 +32,7 @@ $sdk = Get-ChildItem (Join-Path $sdkRoot 'bin') -Directory |
 if (!$sdk) { throw 'Windows SDK SignTool is required.' }
 $destination = Join-Path $root ('out/setup/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
-$packageName = 'MTQQToaster_1.0.0.0_x64.msix'
+$packageName = "MTQQToaster_${version}_x64.msix"
 $package = Join-Path $destination $packageName
 Copy-Item -LiteralPath (Join-Path $root "out/msix/$packageName") -Destination $package
 & (Join-Path $sdk.FullName 'x64/SignTool.exe') sign /fd SHA256 /sha1 $cert.Thumbprint $package
@@ -54,9 +59,9 @@ try {
 } finally { $zip.Dispose() }
 
 $instructions = @"
-MTQQToaster 1.0.0.0 x64 開発用セットアップ
+MTQQToaster $version x64 開発用セットアップ
 
-Windows 10 version 1809以降 / Windows 11 x64
+Windows 10 version 1903以降 / Windows 11 x64
 
 1. ZIPを展開します。
 2. MTQQToaster-Development.cerを開き、「証明書のインストール」を選びます。
@@ -75,7 +80,6 @@ Windows 10 version 1809以降 / Windows 11 x64
 設定の退避後にアンインストールしてください。
 "@
 Set-Content -LiteralPath (Join-Path $destination 'インストール手順.txt') -Value $instructions -Encoding UTF8
-$archive = Join-Path $root 'out/setup/MTQQToaster-1.0.0.0-x64-setup.zip'
-Compress-Archive -LiteralPath $package, (Join-Path $destination 'MTQQToaster-Development.cer'), (Join-Path $destination 'インストール手順.txt') -DestinationPath $archive -Force
+Compress-Archive -LiteralPath $package, (Join-Path $destination 'MTQQToaster-Development.cer'), (Join-Path $destination 'インストール手順.txt') -DestinationPath $archive
 Write-Host "Setup ZIP: $archive"
 Write-Host "CMS signature verified; certificate trust and installation are not performed."

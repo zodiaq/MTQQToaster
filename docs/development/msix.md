@@ -6,37 +6,39 @@
 
 ## 作成
 
+作成前に[バージョン管理ルール](versioning.md)に従ってビルド番号を増やします。スクリプトは既定でCMakeLists.txtの4要素バージョンを使用します。
+
 ビルド環境にWindows SDKのMakeAppxとSignToolを含め、リポジトリのルートで実行します。
 
 ```powershell
 ./scripts/package-msix.ps1
 ```
 
-Releaseの構成・ビルド・CTestが成功した場合だけ、`out/msix/MTQQToaster_1.0.0.0_x64.msix`を作ります。EXE、設定例、パッケージ用PNG、アプリと依存ライブラリのライセンスを同梱します。個人の設定・ログ・証明書は同梱しません。ステージングは実行ごとに別ディレクトリを作成します。
+Releaseの構成・ビルド・CTestが成功した場合だけ、`out/msix/MTQQToaster_1.0.2.0_x64.msix`を作ります。EXE、設定例、パッケージ用PNG、アプリと依存ライブラリのライセンスを同梱します。個人の設定・ログ・証明書は同梱しません。ステージングは実行ごとに別ディレクトリを作成します。
 
-パッケージ画像は`resources/package-icon.png`（白い図柄と濃いグレーの不透明背景）から44・50・150pxで生成します。トレイのテーマ別ICOとは別に管理し、明るい背景でも図柄を識別できるようにしています。
+パッケージ画像は`resources/package-icon.png`（透過背景のカラートースター）から44・50・150pxを基準に、100%・200%・400%表示用のPNGを生成します。透過を維持し、高DPIで小さな画像を拡大するぼやけを抑えます。トレイのテーマ別ICOとは別に管理します。
 
 配布先に合わせてIDと発行者を指定できます。
 
 ```powershell
 ./scripts/package-msix.ps1 -IdentityName 'YourCompany.MTQQToaster' `
-    -Publisher 'CN=YourCompany' -PublisherDisplayName 'YourCompany' -Version '1.0.1.0'
+    -Publisher 'CN=YourCompany' -PublisherDisplayName 'YourCompany' -Version '1.0.2.0'
 ```
 
 デフォルトの発行者は開発用の仮値です。Publisherは署名証明書のSubjectと一致させます。更新時はNameとPublisherを維持し、4桁のVersionを増やしてください。Store配布ではPartner Centerで指定された値を使用します。
 
 ## 署名とインストール
 
-開発用セットアップ一式を作成する場合は`./scripts/create-dev-setup.ps1`を実行します。ビルド・テスト後、CurrentUserのMyストアに開発用コード署名証明書を作成（有効な既存証明書は再利用）し、署名済みMSIX・公開証明書・導入手順を`out/setup/MTQQToaster-1.0.0.0-x64-setup.zip`にまとめます。秘密鍵はエクスポートせず、信頼ストアへの登録とインストールは行いません。CMS署名を検証しますが、信頼された発行者としての検証や実機導入確認とは別です。
+開発用セットアップ一式を作成する場合は`./scripts/create-dev-setup.ps1`を実行します。ビルド・テスト後、CurrentUserのMyストアに開発用コード署名証明書を作成（有効な既存証明書は再利用）し、署名済みMSIX・公開証明書・導入手順を`out/setup/MTQQToaster-1.0.2.0-x64-setup.zip`にまとめます。秘密鍵はエクスポートせず、信頼ストアへの登録とインストールは行いません。CMS署名を検証しますが、信頼された発行者としての検証や実機導入確認とは別です。
 
-生成物は未署名です。通常のインストールには、対象PCが信頼するコード署名証明書での署名が必要です。証明書の生成・信頼ストアへの登録・インストールはスクリプトでは行いません。
+package-msix.ps1単独の生成物は未署名です。通常のインストールには、対象PCが信頼するコード署名証明書での署名が必要です。package-msix.ps1は証明書の生成・信頼ストアへの登録・インストールを行いません。
 
 SDKのx64ディレクトリにあるSignToolで、CurrentUserのMyストアに用意した証明書を指定します。
 
 ```powershell
-signtool sign /fd SHA256 /sha1 <証明書の拇印> out/msix/MTQQToaster_1.0.0.0_x64.msix
-signtool verify /pa /v out/msix/MTQQToaster_1.0.0.0_x64.msix
-Add-AppxPackage -Path out/msix/MTQQToaster_1.0.0.0_x64.msix
+signtool sign /fd SHA256 /sha1 <証明書の拇印> out/msix/MTQQToaster_1.0.2.0_x64.msix
+signtool verify /pa /v out/msix/MTQQToaster_1.0.2.0_x64.msix
+Add-AppxPackage -Path out/msix/MTQQToaster_1.0.2.0_x64.msix
 ```
 
 配布用署名では証明書提供者のタイムスタンプURLを`/tr`で指定し、`/td SHA256`を併用してください。開発用証明書を使う場合も秘密鍵をリポジトリへ保存しません。

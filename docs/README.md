@@ -4,6 +4,8 @@
 
 ## 文書の責務
 
+- [バージョン管理](development/versioning.md)：4要素の採番ルールとセットアップ作成前の更新手順。
+
 - [MSIXパッケージ](development/msix.md)：パッケージ作成、署名、インストール、EXE版との違い。
 
 - [README](../README.md)：概要、最短の開始手順、目的別リンク。
