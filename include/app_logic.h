@@ -87,11 +87,14 @@ public:
     void Destroy();
     void OpenSettings() const noexcept;
     void ExitApplication() const noexcept;
+    void UpdateThemeIcon() noexcept;
 
 private:
     std::function<void()> settingsHandler_;
     std::function<void()> exitHandler_;
     HICON icon_ = nullptr;
+    HINSTANCE instance_ = nullptr;
+    int iconResource_ = 0;
 };
 
 bool IsStartupRegistered();

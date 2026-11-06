@@ -3,7 +3,8 @@
 #include <windows.h>
 #include "resource.h"
 
-IDI_TRAYICON ICON "tray.ico"
+IDI_TRAYICON_WHITE ICON "tray-white.ico"
+IDI_TRAYICON_BLACK ICON "tray-black.ico"
 
 // OS-provided common controls; no Windows App SDK runtime is needed.
 1 RT_MANIFEST "app.manifest"

@@ -46,18 +46,19 @@ try {
     $manifest.Package.Properties.PublisherDisplayName = $PublisherDisplayName
     $manifest.Save((Join-Path $stage 'AppxManifest.xml'))
 
-    # Derive the required package sizes from the existing application icon.
+    # Use the opaque package artwork so it remains visible on light and dark backgrounds.
     Add-Type -AssemblyName System.Drawing
     foreach ($asset in @(@('StoreLogo', 50), @('Square44x44Logo', 44), @('Square150x150Logo', 150))) {
         $size = [int]$asset[1]
-        $icon = [System.Drawing.Icon]::new((Join-Path $root 'resources/tray.ico'), $size, $size)
+        $icon = [System.Drawing.Image]::FromFile((Join-Path $root 'resources/package-icon.png'))
         try {
             $bitmap = [System.Drawing.Bitmap]::new($size, $size)
             try {
                 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
                 try {
-                    $graphics.Clear([System.Drawing.Color]::Transparent)
-                    $graphics.DrawIcon($icon, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
+                    $graphics.Clear([System.Drawing.Color]::FromArgb(255, 37, 37, 37))
+                    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                    $graphics.DrawImage($icon, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
                 } finally { $graphics.Dispose() }
                 $bitmap.Save((Join-Path $stage ('Assets/' + $asset[0] + '.png')), [System.Drawing.Imaging.ImageFormat]::Png)
             } finally { $bitmap.Dispose() }

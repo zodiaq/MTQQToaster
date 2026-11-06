@@ -2,9 +2,26 @@
 #include <fstream>
 #include <limits>
 #include "app_logic.h"
+#include "../resources/resource.h"
 
 // テスト用のダミーグローバルフラグ
 std::atomic<bool> g_running{ true };
+
+TEST(TrayIconTest, ThemeResourcesLoadAtTraySizes) {
+    // Load the built application's resources without starting MQTT or registering a tray icon.
+    const auto module = LoadLibraryExW((GetModuleDirectory() / L"MTQQToaster.exe").c_str(),
+        nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    ASSERT_NE(module, nullptr);
+    for (const int resource : {IDI_TRAYICON_WHITE, IDI_TRAYICON_BLACK}) {
+        for (const int size : {16, 20, 24, 32, 48}) {
+            const auto icon = static_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(resource),
+                IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+            EXPECT_NE(icon, nullptr) << "resource=" << resource << ", size=" << size;
+            if (icon) DestroyIcon(icon);
+        }
+    }
+    FreeLibrary(module);
+}
 
 TEST(SettingsInputTest, AcceptsPositiveIntegersWithoutRounding) {
     size_t value = 0;

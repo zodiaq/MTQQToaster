@@ -97,6 +97,7 @@ add_executable(MTQQToasterTests
     tests/test_main.cpp
     tests/test_mqtt.cpp
 )
+add_dependencies(MTQQToasterTests MTQQToaster)
 target_link_libraries(MTQQToasterTests
     PRIVATE
         MTQQToasterLib

@@ -548,12 +548,25 @@ bool IsStartupRegistered() {
 }
 
 // TrayIcon 実装
+static int ThemeIconResource() noexcept {
+    DWORD lightTheme = 0;
+    DWORD size = sizeof(lightTheme);
+    const auto result = RegGetValueW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &lightTheme, &size);
+    // Windows 10の従来の暗いタスクバーを、値がない場合の既定とする。
+    return result == ERROR_SUCCESS && lightTheme != 0 ? IDI_TRAYICON_BLACK : IDI_TRAYICON_WHITE;
+}
+
 static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     TrayIcon* tray = reinterpret_cast<TrayIcon*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (msg == WM_NCCREATE) {
         const auto create = reinterpret_cast<CREATESTRUCTW*>(lParam);
         tray = static_cast<TrayIcon*>(create->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(tray));
+    }
+    if ((msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED) && tray != nullptr) {
+        tray->UpdateThemeIcon();
     }
     if (msg == WM_TRAYICON && tray != nullptr) {
         const UINT event = LOWORD(lParam);
@@ -594,20 +607,23 @@ bool TrayIcon::Create(HINSTANCE hInstance, std::function<void()> settingsHandler
                       std::function<void()> exitHandler) {
     settingsHandler_ = std::move(settingsHandler);
     exitHandler_ = std::move(exitHandler);
+    instance_ = hInstance;
     WNDCLASSEXW wc = { 0 };
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = TrayWndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = L"MQTT_Notification_TrayClass";
 
-    RegisterClassExW(&wc);
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
 
-    hwnd = CreateWindowExW(0, wc.lpszClassName, _CRT_WIDE(MQTTTOASTER_DEFAULT_TITLE), 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, this);
+    // Message-only windows do not receive WM_SETTINGCHANGE broadcasts.
+    hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, _CRT_WIDE(MQTTTOASTER_DEFAULT_TITLE), WS_POPUP, 0, 0, 0, 0, nullptr, NULL, hInstance, this);
     if (!hwnd) return false;
 
+    iconResource_ = ThemeIconResource();
     icon_ = static_cast<HICON>(LoadImageW(
         hInstance,
-        MAKEINTRESOURCEW(IDI_TRAYICON),
+        MAKEINTRESOURCEW(iconResource_),
         IMAGE_ICON,
         GetSystemMetrics(SM_CXSMICON),
         GetSystemMetrics(SM_CYSMICON),
@@ -636,6 +652,30 @@ bool TrayIcon::Create(HINSTANCE hInstance, std::function<void()> settingsHandler
     nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
     return true;
+}
+
+void TrayIcon::UpdateThemeIcon() noexcept {
+    if (!hwnd || !icon_) return;
+    const int resource = ThemeIconResource();
+    if (resource == iconResource_) return;
+    const auto replacement = static_cast<HICON>(LoadImageW(instance_, MAKEINTRESOURCEW(resource),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    if (!replacement) return;
+
+    NOTIFYICONDATAW update{};
+    update.cbSize = sizeof(update);
+    update.hWnd = hwnd;
+    update.uID = nid.uID;
+    update.uFlags = NIF_ICON;
+    update.hIcon = replacement;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &update)) {
+        DestroyIcon(replacement);
+        return;
+    }
+    DestroyIcon(icon_);
+    icon_ = replacement;
+    nid.hIcon = replacement;
+    iconResource_ = resource;
 }
 
 void TrayIcon::OpenSettings() const noexcept {

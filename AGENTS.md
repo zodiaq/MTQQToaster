@@ -16,7 +16,7 @@
 - `src/main.cpp`: 起動、STAメッセージループ、MQTTワーカー、WinRT設定監視、終了処理。
 - `include/app_logic.h` / `src/app_logic.cpp`: 設定、ペイロード変換、ログ、通知、画像パス、トレイ、スタートアップ登録。
 - `tests/test_main.cpp`: GoogleTestによるペイロード変換と設定読み込みのテスト。
-- `resources/app.rc` / `resources/resource.h` / `resources/tray.ico`: Windowsリソース。
+- `resources/app.rc` / `resources/resource.h` / `resources/tray-white.ico` / `resources/tray-black.ico`: Windowsリソース。
 - `config.sample.json`: 初回取り込み用の設定例。通常の設定・ログは `%LOCALAPPDATA%\MTQQToaster` を基準とする。詳細は [設定リファレンス](docs/reference/configuration.md) を参照する。
 
 ## ドキュメントの更新

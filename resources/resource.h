@@ -1,5 +1,6 @@
 #pragma once
-#define IDI_TRAYICON      101
+#define IDI_TRAYICON_WHITE 103
+#define IDI_TRAYICON_BLACK 104
 
 #define IDR_TRAYMENU      102
 #define ID_STARTUP        2001
