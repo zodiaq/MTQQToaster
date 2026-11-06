@@ -13,6 +13,8 @@ Windows 10 version 1809以降／Windows 11（x64）を対象とします。MQTT 
 
 詳しい操作は[操作マニュアル](docs/user-guide.md)を参照してください。
 
+インストーラーを作成する場合は[MSIXパッケージ手順](docs/development/msix.md)を参照してください。
+
 ## ドキュメント
 
 - **使う** — [操作マニュアル](docs/user-guide.md)：初期設定、画像、自動起動、ログ、困ったとき。

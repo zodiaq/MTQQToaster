@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <limits>
 #include <shlwapi.h>
+#include <appmodel.h>
 #pragma comment(lib, "shlwapi.lib")
 
 #include <nlohmann/json.hpp>
@@ -26,6 +27,24 @@ using namespace Windows::Data::Xml::Dom;
 using namespace Windows::UI::Notifications;
 
 #define WM_TRAYICON (WM_USER + 1)
+
+static bool HasPackageIdentity() noexcept
+{
+    UINT32 length = 0;
+    return GetCurrentPackageFullName(&length, nullptr) == ERROR_INSUFFICIENT_BUFFER;
+}
+
+static winrt::hstring NotificationAppId(const std::string& title)
+{
+    if (!HasPackageIdentity()) return winrt::to_hstring(title);
+    UINT32 length = 0;
+    const auto result = GetCurrentApplicationUserModelId(&length, nullptr);
+    if (result != ERROR_INSUFFICIENT_BUFFER) winrt::check_win32(result);
+    std::wstring id(length, L'\0');
+    winrt::check_win32(GetCurrentApplicationUserModelId(&length, id.data()));
+    id.resize(length - 1);
+    return winrt::hstring(id);
+}
 
 bool ParsePositiveSetting(std::wstring_view text, size_t& value)
 {
@@ -477,7 +496,7 @@ void ShowToast(const NotificationInfo& data) {
         }
 
         ToastNotification toast(toastXml);
-        auto notifier = ToastNotificationManager::CreateToastNotifier(winrt::to_hstring(data.title));
+        auto notifier = ToastNotificationManager::CreateToastNotifier(NotificationAppId(data.title));
         notifier.Show(toast);
 
         spdlog::debug("Toast notification displayed: {}", data.title);
@@ -489,6 +508,12 @@ void ShowToast(const NotificationInfo& data) {
 
 
 void ToggleStartupRegistration() {
+    if (HasPackageIdentity()) {
+        const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(
+            nullptr, L"open", L"ms-settings:startupapps", nullptr, nullptr, SW_SHOWNORMAL));
+        if (result <= 32) spdlog::error("Cannot open startup settings: {}", result);
+        return;
+    }
 	HKEY hKey;
 	if (RegOpenKeyExW(HKEY_CURRENT_USER, STARTUP_REGISTRY_PATH, 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
 		bool isRegistered = false;
@@ -511,6 +536,7 @@ void ToggleStartupRegistration() {
 }
 
 bool IsStartupRegistered() {
+    if (HasPackageIdentity()) return false; // Windows Settings owns the packaged startup state.
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, STARTUP_REGISTRY_PATH, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
         return false;
@@ -542,6 +568,10 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 return 0;
             }
 
+            if (HasPackageIdentity()) {
+                ModifyMenuW(popup, ID_STARTUP, MF_BYCOMMAND | MF_STRING, ID_STARTUP,
+                            L"Windowsのスタートアップ設定...");
+            }
             CheckMenuItem(popup, ID_STARTUP,
                           MF_BYCOMMAND | (IsStartupRegistered() ? MF_CHECKED : MF_UNCHECKED));
             SetForegroundWindow(hwnd);

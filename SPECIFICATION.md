@@ -6,13 +6,15 @@
 
 ## 対応環境
 
-Windows 10 version 1809以降／Windows 11のx64向けトレイ常駐EXEです。Win32とC++/WinRTを使用し、現行ビルド・配布構成にUWP、WinUI、Windows App SDK、MSIX、IDLは含みません。
+Windows 10 version 1809以降／Windows 11のx64向けトレイ常駐EXEです。Win32とC++/WinRTを使用し、EXEの直接実行とMSIXパッケージ作成に対応します。UWP、WinUI、Windows App SDK、IDLは使用しません。署名と導入条件は[MSIX手順](docs/development/msix.md)を参照してください。
 
 ## 通知
 
 受信したUTF-8のJSONまたはプレーンテキストを解析し、Windows標準のトーストAPIへ渡します。本文・画像・タイトルの扱いは[ペイロード仕様](docs/reference/payload.md)を正本とします。
 
 画像なしは`ToastText01`、画像ありは`ToastImageAndText01`を使用します。実表示はWindows側の通知設定や通知元の登録条件にも依存します。
+
+MSIX版はWindowsが割り当てたアプリIDを通知元として使用します。
 
 ## MQTTとTLS
 

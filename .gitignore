@@ -258,6 +258,8 @@ BundleArtifacts/
 Package.StoreAssociation.xml
 _pkginfo.txt
 *.appx
+*.msix
+*.msixbundle
 *.appxbundle
 *.appxupload
 
