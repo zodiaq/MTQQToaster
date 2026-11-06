@@ -1,9 +1,30 @@
 #include <gtest/gtest.h>
 #include <fstream>
+#include <limits>
 #include "app_logic.h"
 
 // テスト用のダミーグローバルフラグ
 std::atomic<bool> g_running{ true };
+
+TEST(SettingsInputTest, AcceptsPositiveIntegersWithoutRounding) {
+    size_t value = 0;
+    ASSERT_TRUE(ParsePositiveSetting(L"0005", value));
+    EXPECT_EQ(value, 5u);
+    const auto maximum = (std::numeric_limits<size_t>::max)();
+    ASSERT_TRUE(ParsePositiveSetting(std::to_wstring(maximum), value));
+    EXPECT_EQ(value, maximum);
+}
+
+TEST(SettingsInputTest, RejectsInvalidNumbersWithoutChangingOutput) {
+    for (const auto* input : {L"", L"0", L"-1", L"+1", L"1.5", L" 1", L"1 ", L"1e3", L"１２", L"nan"}) {
+        size_t value = 7;
+        EXPECT_FALSE(ParsePositiveSetting(input, value));
+        EXPECT_EQ(value, 7u);
+    }
+    size_t value = 7;
+    EXPECT_FALSE(ParsePositiveSetting(std::to_wstring((std::numeric_limits<size_t>::max)()) + L"0", value));
+    EXPECT_EQ(value, 7u);
+}
 
 class WindowPlacementTest : public ::testing::Test {
 protected:

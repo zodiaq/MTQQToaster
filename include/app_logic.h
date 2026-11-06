@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <filesystem>
 #include <functional>
@@ -55,6 +56,7 @@ bool SaveSettingsWindowPlacement(const std::filesystem::path& path, const Settin
 SettingsWindowPlacement FitSettingsWindowToWorkArea(SettingsWindowPlacement placement, const RECT& workArea);
 
 // --- テスト・利用対象関数 ---
+bool ParsePositiveSetting(std::wstring_view text, size_t& value);
 std::filesystem::path GetModuleDirectory();
 AppStoragePaths GetAppDataPaths();
 bool InitializeAppData(const AppStoragePaths& paths);

@@ -1,4 +1,4 @@
-﻿# CMakeList.txt : 最上位の CMake プロジェクト ファイル。グローバル構成を行います
+# CMakeList.txt : 最上位の CMake プロジェクト ファイル。グローバル構成を行います
 # また、サブプロジェクトをここに含めます。
 #
 cmake_minimum_required (VERSION 4.2)
@@ -24,32 +24,18 @@ if(NOT MSVC)
     message(FATAL_ERROR "This project requires MSVC on Windows.")
 endif()
 
-find_package(unofficial-mosquitto CONFIG REQUIRED)
+find_package(coremqtt CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
-
-set(WINAPP_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.winapp")
-if(NOT EXISTS "${WINAPP_SDK_DIR}/include/winrt/Microsoft.UI.Xaml.h")
-    find_program(WINAPP_CLI winapp)
-    if(NOT WINAPP_CLI)
-        message(FATAL_ERROR "Windows App SDK is missing. Install WinApp CLI and run 'winapp restore'.")
-    endif()
-    execute_process(
-        COMMAND "${WINAPP_CLI}" restore
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        RESULT_VARIABLE WINAPP_RESTORE_RESULT
-    )
-    if(NOT WINAPP_RESTORE_RESULT EQUAL 0)
-        message(FATAL_ERROR "Failed to restore Windows App SDK (exit ${WINAPP_RESTORE_RESULT}).")
-    endif()
-endif()
 
 enable_testing()
 
 # 1. ロジック部（静的ライブラリ）
 add_library(MTQQToasterLib STATIC
     src/app_logic.cpp
+    src/mqtt_client.cpp
+    src/mqtt_transport.cpp
 )
 
 target_include_directories(MTQQToasterLib
@@ -61,7 +47,7 @@ target_include_directories(MTQQToasterLib
 
 target_link_libraries(MTQQToasterLib
     PUBLIC
-        unofficial::mosquitto::mosquitto
+        coremqtt::coremqtt
         spdlog::spdlog_header_only
         nlohmann_json::nlohmann_json
         windowsapp
@@ -71,74 +57,45 @@ target_link_libraries(MTQQToasterLib
         Gdi32
         User32
         Kernel32       # 明示的に Kernel32 を追加
-        Advapi32       # mosquitto が使用する標準 Windows サービス API
+        Advapi32
         Ws2_32         # WinSock (Socket 通信)
+        Secur32        # Schannel / SSPI
+        Crypt32        # Windows certificate chain validation
+        Normaliz       # IDN host names
 )
 
 target_compile_options(MTQQToasterLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
-target_compile_definitions(MTQQToasterLib PUBLIC SPDLOG_WCHAR_FILENAMES)
-
-# WinUI実行ファイル用。Windows App SDKが生成したC++/WinRT投影と同じ版で
-# app_logic.cppをコンパイルし、SDK同梱投影を使うテストターゲットと分離する。
-add_library(MTQQToasterWinUiLib STATIC
-    src/app_logic.cpp
-)
-target_include_directories(MTQQToasterWinUiLib
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${WINAPP_SDK_DIR}/include
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/resources
-)
-target_link_libraries(MTQQToasterWinUiLib
-    PUBLIC
-        unofficial::mosquitto::mosquitto
-        spdlog::spdlog_header_only
-        nlohmann_json::nlohmann_json
-        windowsapp
-        Shell32
-        Comdlg32
-        Windowscodecs
-        Gdi32
-        User32
-        Kernel32
-        Advapi32
-        Ws2_32
-)
-target_compile_options(MTQQToasterWinUiLib PUBLIC /utf-8 PRIVATE /permissive- /W4)
-target_compile_definitions(MTQQToasterWinUiLib PUBLIC SPDLOG_WCHAR_FILENAMES)
+target_compile_definitions(MTQQToasterLib PUBLIC SPDLOG_WCHAR_FILENAMES
+    _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000006 CERT_CHAIN_PARA_HAS_EXTRA_FIELDS)
 
 # 2. 本番用 EXE
 add_executable(MTQQToaster WIN32
     src/main.cpp
-    src/modern_ui.cpp
+    src/settings_ui.cpp
     resources/app.rc
 )
 set_source_files_properties(resources/app.rc PROPERTIES COMPILE_FLAGS "/c65001")
 target_include_directories(MTQQToaster PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/resources
-    ${WINAPP_SDK_DIR}/include
 )
-target_link_directories(MTQQToaster PRIVATE ${WINAPP_SDK_DIR}/lib/x64)
 target_link_libraries(MTQQToaster PRIVATE
-    MTQQToasterWinUiLib
-    Microsoft.WindowsAppRuntime.Bootstrap.lib
-    OneCoreUap.lib
+    MTQQToasterLib
+    Comctl32
 )
-target_compile_options(MTQQToaster PRIVATE /bigobj)
+target_compile_options(MTQQToaster PRIVATE /permissive- /W4)
+# resources/app.rc embeds the application manifest.
+target_link_options(MTQQToaster PRIVATE /MANIFEST:NO)
 set_target_properties(MTQQToaster PROPERTIES WIN32_EXECUTABLE TRUE)
 add_custom_command(TARGET MTQQToaster POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/config.sample.json
         $<TARGET_FILE_DIR:MTQQToaster>/config.sample.json
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${WINAPP_SDK_DIR}/bin/x64/Microsoft.WindowsAppRuntime.Bootstrap.dll
-        $<TARGET_FILE_DIR:MTQQToaster>/Microsoft.WindowsAppRuntime.Bootstrap.dll
 )
 
 # 3. テスト用 EXE
 add_executable(MTQQToasterTests
     tests/test_main.cpp
+    tests/test_mqtt.cpp
 )
 target_link_libraries(MTQQToasterTests
     PRIVATE
@@ -154,9 +111,6 @@ if(MSVC)
     target_compile_options(MTQQToasterLib PRIVATE
         "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
     )
-    target_compile_options(MTQQToasterWinUiLib PRIVATE
-        "$<$<CONFIG:Release>:/O1;/Gy;/Gw;/GL>"
-    )
 
     # リンクオプション: 未使用コード/データの削除 (/OPT:REF, /OPT:ICF) と 全体プログラム最適化 (/LTCG)
     target_link_options(MTQQToaster PRIVATE
@@ -169,3 +123,15 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(MTQQToasterTests)
+
+# Opt-in local socket/TLS tests; the fixture creates memory-only certificate trust.
+option(MTQQTOASTER_TRANSPORT_TESTS "Enable local TCP/Schannel integration tests (PowerShell 7.5+)" OFF)
+if(MTQQTOASTER_TRANSPORT_TESTS)
+    find_program(PWSH_EXECUTABLE pwsh REQUIRED)
+    add_executable(MTQQToasterTransportTests tests/test_transport.cpp)
+    target_link_libraries(MTQQToasterTransportTests PRIVATE MTQQToasterLib GTest::gtest_main)
+    add_test(NAME WindowsMqttTransport
+        COMMAND "${PWSH_EXECUTABLE}" -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_transport_tests.ps1"
+            -TestExecutable $<TARGET_FILE:MTQQToasterTransportTests>)
+    set_tests_properties(WindowsMqttTransport PROPERTIES TIMEOUT 60)
+endif()

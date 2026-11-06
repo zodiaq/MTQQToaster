@@ -4,7 +4,7 @@
   "name": "mtqqtoaster",
   "version-string": "1.0.0",
   "dependencies": [
-    "mosquitto",
+    "coremqtt",
     "spdlog",
     "nlohmann-json",
     "gtest"

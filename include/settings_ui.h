@@ -8,26 +8,27 @@
 #include <string>
 #include <vector>
 
-struct ModernUiCallbacks {
+struct SettingsUiCallbacks {
     std::function<AppConfig()> loadConfig;
     std::function<bool(const AppConfig&, const std::vector<std::filesystem::path>&, std::wstring&)> saveConfig;
     std::function<std::optional<SettingsWindowPlacement>()> loadPlacement;
     std::function<void(const SettingsWindowPlacement&)> savePlacement;
 };
 
-class ModernUi {
+class SettingsUi {
 public:
-    explicit ModernUi(ModernUiCallbacks callbacks);
-    ~ModernUi();
+    explicit SettingsUi(SettingsUiCallbacks callbacks);
+    ~SettingsUi();
 
-    ModernUi(const ModernUi&) = delete;
-    ModernUi& operator=(const ModernUi&) = delete;
+    SettingsUi(const SettingsUi&) = delete;
+    SettingsUi& operator=(const SettingsUi&) = delete;
 
     void ShowSettings(bool resetPlacement = false);
     bool IsSettingsReady() const;
     bool IsDefaultLayoutReady() const;
     HWND SettingsHandle() const;
     void CloseAll();
+    bool ProcessMessage(MSG& message);
 
 private:
     struct Impl;

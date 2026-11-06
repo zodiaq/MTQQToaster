@@ -1,0 +1,11 @@
+{
+  "name": "coremqtt",
+  "version": "2.3.1",
+  "description": "Transport-independent MQTT 3.1.1 client",
+  "homepage": "https://github.com/FreeRTOS/coreMQTT",
+  "license": "MIT",
+  "dependencies": [
+    { "name": "vcpkg-cmake", "host": true },
+    { "name": "vcpkg-cmake-config", "host": true }
+  ]
+}

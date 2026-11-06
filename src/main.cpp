@@ -1,27 +1,20 @@
 #include "app_logic.h"
-#include "modern_ui.h"
+#include "settings_ui.h"
+#include "resource.h"
 #include <thread>
 #include <atomic>
 #include <filesystem>
 #include <string_view>
 #include <chrono>
 #include <stdexcept>
-#include <mosquitto.h>
-#include <fmt/ranges.h> // fmt::join に必要
+#include <commctrl.h>
+#include "mqtt_client.h"
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/windows.foundation.collections.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Search.h>
-#include <winrt/Microsoft.UI.Xaml.h>
-#include <winrt/Microsoft.UI.Xaml.Markup.h>
-#include <winrt/Microsoft.UI.Xaml.Controls.h>
-#include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
-#include <winrt/Microsoft.UI.Dispatching.h>
-#include <winrt/Windows.UI.Xaml.Interop.h>
 
-#include <MddBootstrap.h>
-#include <WindowsAppSDK-VersionInfo.h>
 
 using namespace winrt;
 using namespace Windows::Storage;
@@ -39,34 +32,36 @@ AppStoragePaths g_appDataPaths;
 
 namespace {
 
-bool ValidateMqttUrl(const std::string& value)
-{
-    try {
-        const Windows::Foundation::Uri uri(to_hstring(value));
-        const auto scheme = uri.SchemeName();
-        return (scheme == L"mqtt" || scheme == L"mqtts") && !uri.Host().empty() && uri.Port() > 0;
+struct ConfigLock {
+    explicit ConfigLock(bool exclusive) : exclusive_(exclusive) {
+        if (exclusive_) AcquireSRWLockExclusive(&g_configLock);
+        else AcquireSRWLockShared(&g_configLock);
     }
-    catch (const hresult_error&) {
-        return false;
+    ~ConfigLock() {
+        if (exclusive_) ReleaseSRWLockExclusive(&g_configLock);
+        else ReleaseSRWLockShared(&g_configLock);
     }
-}
+    ConfigLock(const ConfigLock&) = delete;
+    ConfigLock& operator=(const ConfigLock&) = delete;
+    bool exclusive_;
+};
 
 AppConfig GetConfigSnapshot()
 {
     AppConfig config;
-    AcquireSRWLockShared(&g_configLock);
+    const ConfigLock lock(false);
     config = g_config;
-    ReleaseSRWLockShared(&g_configLock);
     return config;
 }
 
-bool SaveModernSettings(const AppConfig& requestedConfig,
+bool SaveSettings(const AppConfig& requestedConfig,
                         const std::vector<std::filesystem::path>& selectedImages,
                         std::wstring& error)
 {
     AppConfig config = requestedConfig;
-    if (!ValidateMqttUrl(config.url)) {
-        error = L"MQTT URLには mqtt:// または mqtts:// の有効なURLを入力してください。";
+    try { ValidateMqttConfig(config); }
+    catch (const std::exception& ex) {
+        error = winrt::to_hstring(ex.what());
         return false;
     }
     if (config.topics.empty()) {
@@ -97,80 +92,60 @@ bool SaveModernSettings(const AppConfig& requestedConfig,
     }
 
     RemoveUnusedToastImages(g_appDataPaths.configDirectory, config.topics);
-    AcquireSRWLockExclusive(&g_configLock);
-    g_config = config;
-    ReleaseSRWLockExclusive(&g_configLock);
+    {
+        const ConfigLock lock(true);
+        g_config = config;
+    }
     UpdateLogLevel(config.logLevel);
     g_needsReconnect.store(true, std::memory_order_release);
-    spdlog::info("Settings saved from the WinUI window.");
+    spdlog::info("Settings saved from the Win32 window.");
     return true;
 }
 
 }
 
-Windows::Foundation::IAsyncAction StartConfigWatcherAsync(std::wstring folderPath, std::wstring fileName)
+constexpr UINT WM_CONFIG_CHANGED = WM_APP + 2;
+std::atomic<bool> g_watcherStopping{false};
+
+Windows::Foundation::IAsyncAction StartConfigWatcherAsync(std::wstring folderPath, DWORD ownerThread)
 {
     try {
-        // 1. フォルダとファイルの取得
         const StorageFolder folder = co_await StorageFolder::GetFolderFromPathAsync(folderPath);
-
-        // 2. 特定ファイルのみを対象にするクエリ条件を作成
-        const QueryOptions options(
-            CommonFileQuery::DefaultQuery,
-            winrt::single_threaded_vector<winrt::hstring>({ L".json" })
-        );
-        // ディスクの直接変更を検知するように設定
+        if (g_watcherStopping.load()) co_return;
+        const QueryOptions options(CommonFileQuery::DefaultQuery,
+            winrt::single_threaded_vector<winrt::hstring>({L".json"}));
         options.IndexerOption(Windows::Storage::Search::IndexerOption::DoNotUseIndexer);
-
-        g_queryResult = folder.CreateFileQueryWithOptions(options);
-        const auto files = co_await g_queryResult.GetFilesAsync();
-
-
-        // 3. ファイル変更イベントの購読
-        g_contentsChangedToken = g_queryResult.ContentsChanged([folderPath, fileName](auto const& /*sender*/, auto const& /*args*/) {
-            std::error_code ec;
-			auto configFilePath = std::filesystem::path(folderPath) / fileName;
-            if (!std::filesystem::exists(configFilePath, ec)) {
-                return;
-            }
-
-            // 実際のファイル更新日時を取得して比較
-            auto currentWriteTime = std::filesystem::last_write_time(configFilePath, ec);
-            if (ec || currentWriteTime == g_lastWriteTime) {
-                // タイムスタンプが変わっていない（別ファイル変更やメタデータのみの通知）場合は無視
-                return;
-            }
-
-            // エディタのファイル書き込み完了を少し待機
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-            // 更新日時を再取得して記録
-            currentWriteTime = std::filesystem::last_write_time(configFilePath, ec);
-            g_lastWriteTime = currentWriteTime;
-
-            spdlog::info("Config file changed: {}", winrt::to_string(fileName));
-
-            AppConfig newCfg;
-            if (LoadConfig(configFilePath, newCfg)) {
-                // g_configLock による RAII 排他制御
-                {
-                    AcquireSRWLockExclusive(&g_configLock);
-                    g_config = std::move(newCfg);
-                    ReleaseSRWLockExclusive(&g_configLock);
-                }
-                g_needsReconnect.store(true, std::memory_order_release);
-                spdlog::info("Config reloaded successfully.");
-            }
-            else {
-                spdlog::warn("Failed to reload config.");
-            }
-            });
-
-        spdlog::info("Watcher initialized for: {}", winrt::to_string(fileName));
+        auto query = folder.CreateFileQueryWithOptions(options);
+        co_await query.GetFilesAsync();
+        if (g_watcherStopping.load()) co_return;
+        // The coroutine resumes on the owning STA. Event callbacks only queue work to that STA.
+        g_queryResult = query;
+        g_contentsChangedToken = query.ContentsChanged([ownerThread](auto&&, auto&&) noexcept {
+            if (!g_watcherStopping.load()) PostThreadMessageW(ownerThread, WM_CONFIG_CHANGED, 0, 0);
+        });
+        spdlog::info("Configuration watcher initialized.");
     }
-    catch (hresult_error const& ex) {
+    catch (const hresult_canceled&) {}
+    catch (const hresult_error& ex) {
         spdlog::error("WinRT Watcher Error: {}", winrt::to_string(ex.message()));
     }
+}
+
+void ReloadConfig()
+{
+    std::error_code error;
+    const auto timestamp = std::filesystem::last_write_time(g_appDataPaths.configPath, error);
+    if (error || timestamp == g_lastWriteTime) return;
+    AppConfig config;
+    if (!LoadConfig(g_appDataPaths.configPath, config)) return;
+    {
+        const ConfigLock lock(true);
+        g_config = std::move(config);
+    }
+    g_lastWriteTime = timestamp;
+    g_needsReconnect.store(true, std::memory_order_release);
+    UpdateLogLevel(GetConfigSnapshot().logLevel);
+    spdlog::info("Configuration reloaded.");
 }
 
 // 監視停止処理
@@ -183,155 +158,82 @@ void StopConfigWatcher()
     }
 }
 
-void on_message(struct mosquitto* mosq, void* obj, const struct mosquitto_message* msg) {
-    if (msg->payloadlen <= 0) return;
-    
-    const std::string payload(static_cast<char*>(msg->payload), msg->payloadlen);
-    spdlog::trace("MQTT payload received: {}", payload);
-
-    NotificationInfo data = ParseNotificationPayload(payload);
-    if (data.imageUrl.empty() && msg->topic != nullptr) {
-        AppConfig config;
-        AcquireSRWLockShared(&g_configLock);
-        config = g_config;
-        ReleaseSRWLockShared(&g_configLock);
-
-        for (const auto& topic : config.topics) {
-            bool matches = false;
-            if (mosquitto_topic_matches_sub(topic.topic.c_str(), msg->topic, &matches) == MOSQ_ERR_SUCCESS && matches) {
-                if (!topic.image.empty()) data.imageUrl = topic.image;
-                break;
-            }
-        }
-    }
-    ShowToast(data);
-}
-
-void MqttWorkerThread(std::stop_token stoken) {
-    mosquitto_lib_init();
-
-    while (!stoken.stop_requested()) {
-        struct mosquitto* mosq = mosquitto_new("mqtt_toaster", true, NULL);
-        if (!mosq) break;
-
-        AcquireSRWLockShared(&g_configLock);
-        const AppConfig cfg = g_config;
-        ReleaseSRWLockShared(&g_configLock);
-
-        if (!cfg.user.empty() && !cfg.pass.empty()) {
-            mosquitto_username_pw_set(mosq, cfg.user.c_str(), cfg.pass.c_str());
-        }
-
-        mosquitto_message_callback_set(mosq, on_message);
-        spdlog::info("Connecting to MQTT Broker {}...", cfg.url);
-
-        // Parse URL to extract host and port
-        Windows::Foundation::Uri uri(winrt::to_hstring(cfg.url));
-        const std::string protocol = winrt::to_string(uri.SchemeName()); // e.g. L"mqtts"
-        const std::string host = winrt::to_string(uri.Host()); // e.g. L"192.168.16.25"
-        int port = uri.Port(); // e.g. 8883
-
-		if (protocol == "mqtts") {
-            mosquitto_int_option(mosq, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
-            mosquitto_tls_set(mosq, "", NULL, NULL, NULL, NULL);
-            mosquitto_tls_insecure_set(mosq, true);
-			spdlog::info("Using TLS for MQTT connection.");
-		}
-
-        if (mosquitto_connect(mosq, host.c_str(), port, 60) == MOSQ_ERR_SUCCESS) {
-            std::vector<std::string> topicNames;
-            topicNames.reserve(cfg.topics.size());
-            for (const auto& topic : cfg.topics) topicNames.push_back(topic.topic);
-            spdlog::info("Connected to MQTT Broker. Subscribing to topics: {}", fmt::join(topicNames, ", "));
-            for (const auto& topic : cfg.topics) {
-                mosquitto_subscribe(mosq, NULL, topic.topic.c_str(), 0);
-            }
-            g_needsReconnect = false;
-
-            while (!stoken.stop_requested() && !g_needsReconnect) {
-                int rc = mosquitto_loop(mosq, 1000, 1);
-                if (rc != MOSQ_ERR_SUCCESS) {
-                    Sleep(2000);
-                    break;
+void MqttWorkerThread(std::stop_token stop) noexcept
+{
+    try {
+        init_apartment(apartment_type::multi_threaded);
+        struct ApartmentScope { ~ApartmentScope() { uninit_apartment(); } } apartmentScope;
+        const std::string clientId = fmt::format("mtqq{:08x}{:08x}", GetCurrentProcessId(), static_cast<uint32_t>(GetTickCount64()));
+        while (!stop.stop_requested()) {
+            // Clear before taking the snapshot: a concurrent update remains visible to cancellation.
+            g_needsReconnect.exchange(false, std::memory_order_acq_rel);
+            const AppConfig config = GetConfigSnapshot();
+            const MqttCancelled cancelled = [&] {
+                return stop.stop_requested() || g_needsReconnect.load(std::memory_order_acquire);
+            };
+            try {
+                ValidateMqttConfig(config);
+                WindowsMqttTransport transport(cancelled);
+                const auto endpoint = ParseMqttEndpoint(config.url);
+                spdlog::info("Connecting to MQTT broker (TLS: {}).", endpoint.tls);
+                transport.Connect(endpoint);
+                try {
+                    RunMqttSession(config, transport, cancelled,
+                        [&config](std::string_view topic, std::string_view payload) {
+                            auto notification = ParseNotificationPayload(std::string(payload));
+                            if (notification.imageUrl.empty()) {
+                                for (const auto& subscription : config.topics) {
+                                    if (MqttTopicMatches(subscription.topic, topic)) {
+                                        notification.imageUrl = subscription.image;
+                                        break;
+                                    }
+                                }
+                            }
+                            ShowToast(notification);
+                        }, MqttSessionOptions{60, 5000, clientId});
+                }
+                catch (...) {
+                    if (!cancelled() && !transport.LastError().empty()) spdlog::warn("{}", transport.LastError());
+                    throw;
                 }
             }
-            mosquitto_disconnect(mosq);
+            catch (const std::exception& ex) {
+                if (!cancelled()) spdlog::warn("MQTT connection ended: {}", ex.what());
+            }
+            catch (...) {
+                if (!cancelled()) spdlog::warn("MQTT connection ended with a Windows API error.");
+            }
+            // Cancellation remains responsive during reconnect backoff.
+            for (int i = 0; i < 50 && !cancelled(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        else {
-            for (int i = 0; i < 5 && !stoken.stop_requested(); ++i) Sleep(1000);
-        }
-        mosquitto_destroy(mosq);
     }
-    mosquitto_lib_cleanup();
+    catch (...) { OutputDebugStringW(L"MTQQToaster: MQTT worker initialization failed.\n"); }
 }
 
 namespace {
 
-std::unique_ptr<ModernUi> g_modernUi;
+std::unique_ptr<SettingsUi> g_settingsUi;
 TrayIcon g_tray;
 std::unique_ptr<std::jthread> g_mqttThread;
 HINSTANCE g_instance = nullptr;
 bool g_uiSmokeTest = false;
+bool g_uiPreview = false;
 int g_exitCode = 0;
 
-struct App : winrt::Microsoft::UI::Xaml::ApplicationT<App, winrt::Microsoft::UI::Xaml::Markup::IXamlMetadataProvider> {
-    App()
-    {
-        UnhandledException([](auto&&, const winrt::Microsoft::UI::Xaml::UnhandledExceptionEventArgs& args) {
-            spdlog::critical("Unhandled XAML exception: {}", to_string(args.Message()));
-        });
-    }
-
-    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(
-        const Windows::UI::Xaml::Interop::TypeName& type) { return MetadataProvider().GetXamlType(type); }
-    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(const hstring& name) {
-        return MetadataProvider().GetXamlType(name);
-    }
-    com_array<winrt::Microsoft::UI::Xaml::Markup::XmlnsDefinition> GetXmlnsDefinitions() {
-        return MetadataProvider().GetXmlnsDefinitions();
-    }
-
-    void OnLaunched(const winrt::Microsoft::UI::Xaml::LaunchActivatedEventArgs&)
-    {
-        try {
-            Launch();
-        }
-        catch (const hresult_error& ex) {
-            g_exitCode = 1;
-            spdlog::critical("Application launch failed. HRESULT: 0x{:08x}, message: {}",
-                             static_cast<unsigned int>(ex.code()), to_string(ex.message()));
-            Exit();
-        }
-        catch (const std::exception& ex) {
-            g_exitCode = 1;
-            spdlog::critical("Application launch failed: {}", ex.what());
-            Exit();
-        }
-    }
-
-private:
+struct App {
     void Launch()
     {
-        // XAML schema initialization requires a fully constructed Application.
-        spdlog::info("Initializing WinUI metadata.");
-        winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider::Initialize();
-        spdlog::info("Initializing WinUI control resources.");
-        Resources().MergedDictionaries().Append(
-            winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
-        spdlog::info("WinUI resources initialized.");
-
-        // This tray app must keep running when the settings window closes.
-        DispatcherShutdownMode(winrt::Microsoft::UI::Xaml::DispatcherShutdownMode::OnExplicitShutdown);
-
-        ModernUiCallbacks callbacks;
+        SettingsUiCallbacks callbacks;
         if (g_uiSmokeTest) {
-            callbacks.loadConfig = [] {
-                AppConfig config;
-                config.url = "mqtt://localhost:1883";
-                config.topics.push_back({"test/日本語", ""});
-                return config;
+            smokeConfig.url = "mqtt://localhost:1883";
+            smokeConfig.topics = {{"test/日本語", "old-image.png"}};
+            callbacks.loadConfig = [this] { return smokeConfig; };
+            callbacks.saveConfig = [this](const AppConfig& config, const auto& images, std::wstring& error) {
+                if (images.size() != config.topics.size()) { error = L"画像数が一致しません。"; return false; }
+                smokeConfig = config;
+                ++smokeSaves;
+                return true;
             };
-            callbacks.saveConfig = [](auto&&, auto&&, auto&&) { return false; };
             callbacks.loadPlacement = [] { return LoadSettingsWindowPlacement(GetModuleDirectory() / L"ui-smoke-state.json"); };
             callbacks.savePlacement = [](const auto& placement) {
                 if (!SaveSettingsWindowPlacement(GetModuleDirectory() / L"ui-smoke-state.json", placement)) {
@@ -341,7 +243,7 @@ private:
         }
         else {
             callbacks.loadConfig = GetConfigSnapshot;
-            callbacks.saveConfig = SaveModernSettings;
+            callbacks.saveConfig = SaveSettings;
             const auto placementPath = g_appDataPaths.configDirectory / L"ui-state.json";
             callbacks.loadPlacement = [placementPath] { return LoadSettingsWindowPlacement(placementPath); };
             callbacks.savePlacement = [placementPath](const auto& placement) {
@@ -350,128 +252,231 @@ private:
                 }
             };
         }
-        g_modernUi = std::make_unique<ModernUi>(std::move(callbacks));
+        g_settingsUi = std::make_unique<SettingsUi>(std::move(callbacks));
 
         if (g_uiSmokeTest) {
-            StartUiSmokeTest();
+            if (g_uiPreview) g_settingsUi->ShowSettings(true);
+            else StartUiSmokeTest();
             return;
         }
 
         if (!g_tray.Create(
                 g_instance,
-                [] { if (g_modernUi) g_modernUi->ShowSettings((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0); },
+                [] { if (g_settingsUi) g_settingsUi->ShowSettings((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0); },
                 [] {
                     spdlog::info("Exit selected from tray menu. Terminating...");
-                    winrt::Microsoft::UI::Xaml::Application::Current().Exit();
+                    PostQuitMessage(0);
                 })) {
-            spdlog::error("Failed to create tray icon.");
+            throw std::runtime_error("Failed to create tray icon");
         }
 
-        StartConfigWatcherAsync(g_appDataPaths.configDirectory.wstring(), L"config.json");
+        watcher = StartConfigWatcherAsync(g_appDataPaths.configDirectory.wstring(), GetCurrentThreadId());
         g_mqttThread = std::make_unique<std::jthread>(MqttWorkerThread);
         spdlog::info("Tray application ready.");
     }
 
     void StartUiSmokeTest()
     {
-        smokeTimer = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
-        smokeTimer.Interval(std::chrono::seconds(1));
-        smokeTimer.IsRepeating(true);
-        smokeTimer.Tick([this](auto&&, auto&&) {
-            try {
-                switch (smokeStep++) {
-                case 0:
-                    spdlog::info("UI smoke test: opening settings after windowless startup.");
-                    g_modernUi->ShowSettings(true);
-                    break;
-                case 1:
-                    if (!g_modernUi->IsDefaultLayoutReady()) throw std::runtime_error("Default settings layout is incorrect");
-                    {
-                        const auto hwnd = g_modernUi->SettingsHandle();
-                        check_bool(GetWindowRect(hwnd, &smokeBounds));
-                        check_bool(SetWindowPos(hwnd, nullptr, smokeBounds.left + 12, smokeBounds.top + 12,
-                            smokeBounds.right - smokeBounds.left - 40, smokeBounds.bottom - smokeBounds.top - 40,
-                            SWP_NOZORDER | SWP_NOACTIVATE));
-                        check_bool(GetWindowRect(hwnd, &smokeBounds));
-                    }
-                    break;
-                case 2:
-                    g_modernUi->CloseAll();
-                    break;
-                case 3:
-                    g_modernUi->ShowSettings();
-                    break;
-                case 4:
-                    if (!g_modernUi->IsSettingsReady()) throw std::runtime_error("Settings controls did not reload");
-                    {
-                        RECT restored{};
-                        check_bool(GetWindowRect(g_modernUi->SettingsHandle(), &restored));
-                        if (!EqualRect(&smokeBounds, &restored)) throw std::runtime_error("Window placement was not restored");
-                    }
-                    spdlog::info("UI smoke test: saved position and size restored.");
-                    g_modernUi->ShowSettings(true);
-                    break;
-                case 5:
-                    if (!g_modernUi->IsDefaultLayoutReady()) throw std::runtime_error("Window placement reset failed");
-                    spdlog::info("UI smoke test: default placement reset passed.");
-                    g_modernUi->CloseAll();
-                    break;
-                case 6:
-                    smokeTimer.Stop();
-                    g_exitCode = 0;
-                    spdlog::info("UI smoke test passed.");
-                    Exit();
+        smokeTimer = SetTimer(nullptr, 0, 100, nullptr);
+        check_bool(smokeTimer != 0);
+        spdlog::info("UI smoke test: waiting for Win32 message loop.");
+    }
+
+    bool IsSmokeTimer(const MSG& message) const
+    {
+        return smokeTimer && message.message == WM_TIMER && message.hwnd == nullptr && message.wParam == smokeTimer;
+    }
+
+    void Tick()
+    {
+        try {
+            switch (smokeStep++) {
+            case 0:
+                spdlog::info("UI smoke test: opening settings after windowless startup.");
+                g_settingsUi->ShowSettings(true);
+                break;
+            case 1:
+                if (!g_settingsUi->IsDefaultLayoutReady()) throw std::runtime_error("Default settings layout is incorrect");
+                {
+                    const auto hwnd = g_settingsUi->SettingsHandle();
+                    check_bool(GetWindowRect(hwnd, &smokeBounds));
+                    check_bool(SetWindowPos(hwnd, nullptr, smokeBounds.left + 12, smokeBounds.top + 12,
+                        smokeBounds.right - smokeBounds.left - 40, smokeBounds.bottom - smokeBounds.top - 40,
+                        SWP_NOZORDER | SWP_NOACTIVATE));
+                    check_bool(GetWindowRect(hwnd, &smokeBounds));
+                }
+                break;
+            case 2:
+                g_settingsUi->CloseAll();
+                break;
+            case 3:
+                g_settingsUi->ShowSettings();
+                break;
+            case 4:
+                if (!g_settingsUi->IsSettingsReady()) throw std::runtime_error("Settings controls did not reload");
+                {
+                    RECT restored{};
+                    check_bool(GetWindowRect(g_settingsUi->SettingsHandle(), &restored));
+                    if (!EqualRect(&smokeBounds, &restored)) throw std::runtime_error("Window placement was not restored");
+                }
+                spdlog::info("UI smoke test: saved position and size restored.");
+                g_settingsUi->ShowSettings(true);
+                break;
+            case 5:
+                if (!g_settingsUi->IsDefaultLayoutReady()) throw std::runtime_error("Window placement reset failed");
+                spdlog::info("UI smoke test: default placement reset passed.");
+                g_settingsUi->CloseAll();
+                break;
+            case 6:
+                // Exercise real dialog commands against an in-memory configuration.
+                g_settingsUi->ShowSettings(true);
+                {
+                    const auto hwnd = g_settingsUi->SettingsHandle();
+                    const auto form = GetDlgItem(hwnd, IDC_SETTINGS_FORM);
+                    check_pointer(form);
+                    check_bool(SetDlgItemTextW(form, IDC_TOPIC_IMAGE, L""));
+                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_EDIT, BN_CLICKED), 0);
+                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_ADD, BN_CLICKED), 0);
+                    check_bool(SetDlgItemTextW(form, IDC_TOPIC_NAME, L"追加/日本語/#"));
+                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_EDIT, BN_CLICKED), 0);
+                    SendMessageW(form, WM_COMMAND, MAKEWPARAM(IDC_TOPIC_DELETE, BN_CLICKED), 0);
+                    check_bool(SetDlgItemTextW(form, IDC_MQTT_USER, L"テスト"));
+                    check_bool(SetDlgItemTextW(form, IDC_LOG_SIZE, L"12"));
+                    SendMessageW(hwnd, WM_COMMAND, IDOK, 0);
+                }
+                if (g_settingsUi->SettingsHandle() || smokeSaves != 1 || smokeConfig.topics.size() != 1 ||
+                    !smokeConfig.topics[0].image.empty() || smokeConfig.user != "テスト" || smokeConfig.maxLogSizeMb != 12) {
+                    throw std::runtime_error("Settings commands did not save the expected configuration");
+                }
+                g_settingsUi->ShowSettings();
+                {
+                    const auto hwnd = g_settingsUi->SettingsHandle();
+                    check_bool(SetDlgItemTextW(GetDlgItem(hwnd, IDC_SETTINGS_FORM), IDC_MQTT_USER, L"cancelled"));
+                    SendMessageW(hwnd, WM_COMMAND, IDCANCEL, 0);
+                }
+                if (smokeSaves != 1 || smokeConfig.user != "テスト") throw std::runtime_error("Cancel saved settings");
+                spdlog::info("UI smoke test: topic add/update/delete, image removal, save and cancel passed.");
+                break;
+            case 7:
+                smokeDirectory = std::filesystem::temp_directory_path() /
+                    (L"MTQQToaster-ui-smoke-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+                check_bool(std::filesystem::create_directory(smokeDirectory));
+                g_appDataPaths.configDirectory = smokeDirectory;
+                g_appDataPaths.configPath = smokeDirectory / L"config.json";
+                if (!SaveConfig(g_appDataPaths.configPath, smokeConfig)) throw std::runtime_error("Cannot create watcher fixture");
+                watcher = StartConfigWatcherAsync(smokeDirectory.wstring(), GetCurrentThreadId());
+                break;
+            case 8:
+                if (watcher.Status() == Windows::Foundation::AsyncStatus::Started) {
+                    if (++watcherWaits > 100) throw std::runtime_error("Watcher initialization timed out");
+                    --smokeStep;
                     break;
                 }
+                watcher.GetResults();
+                if (!g_contentsChangedToken) throw std::runtime_error("Watcher failed to subscribe");
+                smokeConfig.url = "mqtt://localhost:1884";
+                if (!SaveConfig(g_appDataPaths.configPath, smokeConfig)) throw std::runtime_error("Cannot update watcher fixture");
+                watcherWaits = 0;
+                break;
+            case 9:
+                if (GetConfigSnapshot().url != smokeConfig.url) {
+                    if (++watcherWaits > 100) throw std::runtime_error("Configuration reload timed out");
+                    --smokeStep;
+                    break;
+                }
+                spdlog::info("UI smoke test: configuration watcher reload passed.");
+                StopConfigWatcher();
+                // Begin another initialization and immediately quit to cover shutdown during an await.
+                watcher = StartConfigWatcherAsync(smokeDirectory.wstring(), GetCurrentThreadId());
+                StopTimer();
+                g_exitCode = 0;
+                spdlog::info("UI smoke test passed.");
+                PostQuitMessage(0);
+                break;
             }
-            catch (const hresult_error& ex) {
-                spdlog::error("UI smoke test failed. HRESULT: 0x{:08x}, message: {}",
-                              static_cast<unsigned int>(ex.code()), to_string(ex.message()));
-                smokeTimer.Stop();
-                Exit();
-            }
-            catch (const std::exception& ex) {
-                spdlog::error("UI smoke test failed: {}", ex.what());
-                smokeTimer.Stop();
-                Exit();
-            }
-        });
-        smokeTimer.Start();
-        spdlog::info("UI smoke test: waiting for UI dispatcher.");
-    }
-
-    winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider MetadataProvider()
-    {
-        if (!metadataProvider) {
-            metadataProvider = winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider();
         }
-        return metadataProvider;
+        catch (const hresult_error& ex) {
+            spdlog::error("UI smoke test failed. HRESULT: 0x{:08x}, message: {}",
+                          static_cast<unsigned int>(ex.code()), to_string(ex.message()));
+            StopTimer();
+            PostQuitMessage(0);
+        }
+        catch (const std::exception& ex) {
+            spdlog::error("UI smoke test failed: {}", ex.what());
+            StopTimer();
+            PostQuitMessage(0);
+        }
     }
 
-    winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer smokeTimer{nullptr};
+    void StopTimer() { if (smokeTimer) { KillTimer(nullptr, smokeTimer); smokeTimer = 0; } }
+    bool ProcessConfigMessage(const MSG& message)
+    {
+        if (message.message == WM_CONFIG_CHANGED && !message.hwnd) {
+            configTimer = SetTimer(nullptr, configTimer, 150, nullptr);
+            check_bool(configTimer != 0);
+            return true;
+        }
+        if (configTimer && message.message == WM_TIMER && !message.hwnd && message.wParam == configTimer) {
+            KillTimer(nullptr, configTimer);
+            configTimer = 0;
+            ReloadConfig();
+            return true;
+        }
+        return false;
+    }
+
+    ~App()
+    {
+        StopTimer();
+        if (configTimer) KillTimer(nullptr, configTimer);
+        g_tray.Destroy();
+        if (g_settingsUi) g_settingsUi->CloseAll();
+        g_watcherStopping.store(true);
+        try {
+            StopConfigWatcher();
+            if (watcher) {
+                watcher.Cancel();
+                // Complete STA continuations before COM teardown; no new subscriptions are allowed.
+                while (watcher.Status() == Windows::Foundation::AsyncStatus::Started) {
+                    MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    MSG message{};
+                    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                        if (message.message == WM_QUIT || message.message == WM_CONFIG_CHANGED) continue;
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+                watcher.GetResults();
+            }
+        }
+        catch (...) { OutputDebugStringW(L"MTQQToaster: configuration watcher stopped.\n"); }
+        if (!smokeDirectory.empty()) {
+            std::error_code error;
+            std::filesystem::remove(smokeDirectory / L"config.json", error);
+            std::filesystem::remove(smokeDirectory, error);
+        }
+    }
+
+    UINT_PTR smokeTimer = 0;
+    UINT_PTR configTimer = 0;
+    Windows::Foundation::IAsyncAction watcher{nullptr};
     int smokeStep = 0;
     RECT smokeBounds{};
-    winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider metadataProvider{nullptr};
+    AppConfig smokeConfig;
+    int smokeSaves = 0;
+    std::filesystem::path smokeDirectory;
+    int watcherWaits = 0;
 };
 
 }
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR commandLine, _In_ int) {
-    g_uiSmokeTest = std::string_view(commandLine) == "--ui-smoke-test";
-    g_exitCode = g_uiSmokeTest ? 1 : 0;
+    g_uiPreview = std::string_view(commandLine) == "--ui-preview";
+    g_uiSmokeTest = g_uiPreview || std::string_view(commandLine) == "--ui-smoke-test";
+    g_exitCode = g_uiSmokeTest && !g_uiPreview ? 1 : 0;
     init_apartment(apartment_type::single_threaded);
-
-    const HRESULT bootstrapResult = MddBootstrapInitialize2(
-        WINDOWSAPPSDK_RELEASE_MAJORMINOR,
-        WINDOWSAPPSDK_RELEASE_VERSION_TAG_W,
-        PACKAGE_VERSION{WINDOWSAPPSDK_RUNTIME_VERSION_UINT64},
-        MddBootstrapInitializeOptions_OnPackageIdentity_NOOP);
-    if (FAILED(bootstrapResult)) {
-        MessageBoxW(nullptr, L"Windows App SDK Runtimeを初期化できませんでした。",
-                    L"MTQQToaster", MB_ICONERROR | MB_OK);
-        uninit_apartment();
-        return static_cast<int>(bootstrapResult);
-    }
+    const INITCOMMONCONTROLSEX commonControls{sizeof(commonControls), ICC_STANDARD_CLASSES};
+    if (!InitCommonControlsEx(&commonControls)) { uninit_apartment(); return 1; }
 
     g_instance = hInstance;
 
@@ -479,7 +484,6 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR comm
 	HANDLE hMutex = g_uiSmokeTest ? nullptr : CreateMutexW(NULL, TRUE, L"Global\\MQTTToasterMutex");
 	if (!g_uiSmokeTest && GetLastError() == ERROR_ALREADY_EXISTS) {
 		MessageBoxW(NULL, L"MQTT Toaster is already running.", L"MQTT Toaster", MB_ICONEXCLAMATION | MB_OK);
-		MddBootstrapShutdown();
         uninit_apartment();
         return 0;
 	}
@@ -492,7 +496,6 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR comm
         if (!InitializeAppData(g_appDataPaths)) {
             MessageBoxW(NULL, L"アプリケーションデータフォルダーを初期化できませんでした。", L"MTQQToaster", MB_ICONERROR | MB_OK);
             if (hMutex) CloseHandle(hMutex);
-            MddBootstrapShutdown();
             uninit_apartment();
             return 1;
         }
@@ -509,9 +512,34 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR comm
         }
     }
 
-    winrt::Microsoft::UI::Xaml::Application::Start([](auto&&) { make<App>(); });
+    try {
+        App app;
+        app.Launch();
+        MSG message{};
+        int result = 0;
+        while ((result = GetMessageW(&message, nullptr, 0, 0)) > 0) {
+            if (app.IsSmokeTimer(message)) { app.Tick(); continue; }
+            if (app.ProcessConfigMessage(message)) continue;
+            if (g_settingsUi && g_settingsUi->ProcessMessage(message)) {
+                if (g_uiPreview && !g_settingsUi->SettingsHandle()) break;
+                continue;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+            if (g_uiPreview && !g_settingsUi->SettingsHandle()) break;
+        }
+        if (result == -1) g_exitCode = 1;
+    }
+    catch (const std::exception& ex) {
+        g_exitCode = 1;
+        spdlog::error("Application failed: {}", ex.what());
+    }
+    catch (...) {
+        g_exitCode = 1;
+        spdlog::error("Application failed.");
+    }
 
-    if (g_modernUi) g_modernUi->CloseAll();
+    if (g_settingsUi) g_settingsUi->CloseAll();
     if (g_mqttThread) {
         g_mqttThread->request_stop();
         g_mqttThread->join();
@@ -522,12 +550,10 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR comm
 	StopConfigWatcher();
 
     g_tray.Destroy();
-    g_modernUi.reset();
+    g_settingsUi.reset();
     if (hMutex) CloseHandle(hMutex);
     spdlog::info("=== Application Terminating ===");
     spdlog::shutdown();
-
-    MddBootstrapShutdown();
     uninit_apartment();
     return g_exitCode;
 }

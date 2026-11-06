@@ -8,7 +8,7 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 
 * **Language / Runtime**: C++23 (MSVC / C++/WinRT)
 * **Execution Mode**: System tray resident application
-* **MQTT Worker Thread**: Handles broker communication and event loop processing using `libmosquitto`
+* **MQTT Worker Thread**: Handles broker communication and event loop processing using `coreMQTT` over Winsock / Schannel
 * **Configuration Watcher**: Monitors changes to `config.json` using `Windows.Storage.Search.StorageFileQueryResult`.
 
 ---
@@ -27,13 +27,13 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 
 ### 2.2 MQTT Communication Feature
 
-* **Library**: `mosquitto` (C API)
-* **Auto-reconnect**: Automatically attempts to reconnect at 5-second intervals upon disconnection or configuration changes.
+* **Library**: coreMQTT v2.3.1 (MQTT 3.1.1) with Winsock / Schannel. See [MQTT transport](docs/mqtt-transport.md).
+* **Auto-reconnect**: Waits 5 seconds after failure, recreates a clean session and resubscribes. Configuration changes interrupt the wait and trigger reconnect immediately.
 * **Authentication**: Supports username and password authentication (optional).
 
 ### 2.3 Configuration and Hot Reload Feature
 
-* **Settings UI**: The tray menu opens a WinUI 3 settings window for MQTT connection, topics, credentials, images, and logging.
+* **Settings UI**: The tray menu opens a native Win32 settings dialog for MQTT connection, topics, credentials, images, and logging.
 * **Configuration File**: The UI persists settings to the per-user application data directory. JSON remains an internal persistence format.
 * **Legacy Migration**: On first launch, an existing `config.json` beside the executable is copied to the new location. Otherwise `config.sample.json` is used when available.
 * **Dynamic Reload**: Immediately detects modifications and saves to `config.json` at the kernel level.
@@ -54,7 +54,7 @@ A system tray resident application written in C++/WinRT that receives JSON messa
 	* "Add to Startup" Register/unregister startup
 	* "Settings..." Open the settings dialog
 	* "Exit" Exit the application
-* Closing the WinUI settings window does not terminate the tray application. WinUI initialization runs after Application construction, in `OnLaunched`.
+* Closing the settings dialog does not terminate the tray application. A Win32 STA message loop owns the modeless dialog and tray icon; only Exit terminates the application.
 * Settings initially open centered in the cursor monitor's work area, sized to fit their contents (capped to the work area). Log level, maximum size and retention count share one row.
 * Normal bounds and maximized state are saved separately in `ui-state.json` on close and restored across restarts. Holding Shift while selecting Settings resets placement and size; invalid or off-screen bounds are recovered safely.
 
@@ -131,6 +131,6 @@ If mandatory parameters	are not set, it will be processed with the title set to 
 ### External Libraries
 
 1. C++/WinRT
-2. libmosquitto
+2. coreMQTT v2.3.1 (local vcpkg overlay port); TLS uses OS-provided Schannel
 3. nlohmann/json
 4. spdlog

@@ -22,15 +22,6 @@ CMake、Ninja、vcpkg、C++/WinRTを別途インストールする必要はあ�
 ライブラリは`vcpkg.json`に従って最初のCMake構成時に自動取得されます。初回はインターネット接続とダウンロード・ビルドの時間が必要です。
 vcpkgのclone、bootstrap、`vcpkg integrate install`、`VCPKG_ROOT`の手動設定は不要です。
 
-WinUI 3用のWindows App SDKはMicrosoftのWinApp CLIで復元します。初回だけ次を実行してください。
-
-```powershell
-winget install --id Microsoft.winappcli --source winget
-winapp restore
-```
-
-`winapp.yaml`がWindows App SDKと投影ヘッダーの版を固定します。CMake構成時に`.winapp`がなければ`winapp restore`を自動実行します。
-
 ### ビルドとテスト
 
 スタートメニューから **Developer PowerShell for VS 2026** を開き、リポジトリのディレクトリで実行します。
@@ -45,7 +36,7 @@ ctest --test-dir build -C Release --output-on-failure --no-tests=error
 EXEは`build/Release/MTQQToaster.exe`です。初回起動時にユーザー別のアプリデータフォルダーへ設定ファイルを作成します。トレイアイコンを右クリックして「設定...」を選び、MQTT接続とログ設定を入力してください。
 Debugの場合は、ビルドとテストの`Release`を`Debug`に置き換えてください。
 アプリと依存ライブラリはx64・静的CRT（Release: `/MT`、Debug: `/MTd`）でビルドします。
-unpackaged実行ではWindows App SDK Runtimeが必要です。`winapp restore`は開発機へ対応するランタイムも導入します。配布時はMicrosoftのWindows App Runtime installerをセットアップへ含めてください。
+対応するWindows上では追加のWindows App Runtime・.NET・VC++ Redistributableのインストールは不要です。実行モジュールは`MTQQToaster.exe`だけです（設定例と依存ライブラリのライセンス文書は別途配布）。以前のビルドフォルダーに残る`Microsoft.WindowsAppRuntime.Bootstrap.dll`は不要です。MQTTは静的リンクしたcoreMQTT v2.3.1、TLSはOS標準のSchannelを利用し、OpenSSLは不要です。Windows 10 version 1809以降／Windows 11を対象とします。
 
 プリセットを利用する場合（DebugとReleaseで構成・依存ライブラリを共有します）:
 
@@ -64,7 +55,9 @@ $process = Start-Process .\out\build\windows-x64\Release\MTQQToaster.exe --ui-sm
 $process.ExitCode
 ```
 
-ウィンドウなしの起動、設定画面の読み込み・中央配置・スクロール量・ログ3列配置、位置サイズの保存・復元・初期化、閉じた後の常駐、正常終了を検証します。成功時の終了コードは0、失敗は非0です。診断とテスト用の位置情報はEXEと同じフォルダーの`ui-smoke.log`、`ui-smoke-state.json`へ記録します。実設定にはアクセスせず、MQTT接続やトレイ登録も行いません。設定画面が一時的に表示されるため、通常のCTestとは別に実行します。
+ウィンドウなしの起動、設定画面の読み込み・中央配置・スクロール量・ログ3列配置、位置サイズの保存・復元・初期化、topicの追加・更新・削除、画像解除、保存・キャンセル、閉じた後の常駐を検証します。専用の一時フォルダーで設定監視による再読み込みと監視初期化中の終了も検証します。成功時の終了コードは0、失敗は非0です。診断とテスト用の位置情報はEXEと同じフォルダーの`ui-smoke.log`、`ui-smoke-state.json`へ記録します。実設定にはアクセスせず、MQTT接続やトレイ登録も行いません。設定画面が一時的に表示されるため、通常のCTestとは別に実行します。
+
+`--ui-preview`では、実設定やネットワークを使わずにサンプル設定の画面を手動確認できます。保存はメモリ内だけに適用され、画面を閉じると終了します。
 
 ### 以前の構成で失敗していた場合
 
@@ -84,7 +77,7 @@ vcpkgが見つからない場合は、Visual Studio Installerで上記コンポ�
 ## Configuration
 Use **Settings...** in the tray menu to configure the MQTT broker, subscribed topics, and logging. The application persists these values in its per-user application data directory; direct JSON editing is not required.
 
-The settings window uses WinUI 3. The tray menu uses the native Win32 menu, and the notification-area icon uses `Shell_NotifyIcon`. Closing the settings window leaves the application running; use **Exit** in the tray menu to terminate it.
+The settings window uses native Win32 dialogs and standard controls. The tray menu uses the native Win32 menu, and the notification-area icon uses `Shell_NotifyIcon`. Closing the settings window leaves the application running; use **Exit** in the tray menu to terminate it.
 
 設定画面は初回、マウスがあるモニターの作業領域中央に、内容に合わせたサイズで表示します。位置・サイズ（最大化状態を含む）は閉じるときに設定フォルダーの`ui-state.json`へ保存し、次回起動後も復元します。**Shiftを押しながらトレイの「設定...」を選ぶと位置・サイズを初期化**します。設定画面が開いている場合もリセットできます。画面より内容が大きい場合や手動で縮小した場合はスクロールできます。ログレベル・最大サイズ・保持数は横並びです。
 
@@ -106,8 +99,23 @@ Runtime files are separated by purpose:
 
 - Visual Studio 2026 Community with Desktop development with C++ (MSVC, Windows SDK, CMake and vcpkg included)
 - Windows SDK C++/WinRT headers (for toast notifications and others)
-- Windows App SDK / WinUI 3 (restored by WinApp CLI according to `winapp.yaml`)
-- Automatically restored via vcpkg: mosquitto, spdlog, nlohmann/json and GoogleTest
+- Automatically restored via vcpkg: coreMQTT v2.3.1 (local overlay port), spdlog, nlohmann/json and GoogleTest
+
+## MQTT / TLS
+
+`mqtt://host[:port]`（既定1883）と`mqtts://host[:port]`（既定8883）に対応します。IPv6は`mqtts://[::1]:8883`の形式です。認証情報は専用の設定欄へ入力し、URLにユーザー名・パスワード・パスを含めないでください。
+
+MQTT 3.1.1、clean session、QoS 0購読、複数topic、`+` / `#`、60秒keep-aliveを使用します。切断時は5秒後に再接続し、すべてのtopicを再購読します。設定変更と終了では待機を中断します。topicは1～128件、MQTTパケット全体の受信上限は256 KiBです。超過・不正応答・購読拒否時には切断して再接続します。
+
+TLS 1.2以降を使用し、Windowsの信頼ストアで証明書チェーン、有効期限、失効状態、接続先名を検証します。以前の接続先名検証の無効化は廃止しました。独自CAを使う場合はそのCAへの信頼をWindows側で構成し、証明書のSANに一致するホスト名で接続してください。証明書検証を無効にする設定はありません。クライアント証明書認証・WebSocket・MQTT 5は対象外です。
+
+実装と検証範囲は[MQTT通信層](docs/mqtt-transport.md)を参照してください。ローカルTCP/TLS結合テストにはPowerShell 7.5以降を使用します（配布先には不要）。ユーザーの証明書ストアは変更しません。
+
+```powershell
+cmake --preset x64-release -DMTQQTOASTER_TRANSPORT_TESTS=ON
+cmake --build --preset x64-release --parallel
+ctest --preset x64-release
+```
 
 ## License
 MTQQToaster is licensed under the MIT License. See the LICENSE file for more information.

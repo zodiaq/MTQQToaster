@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <stdexcept>
+#include <limits>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
 
@@ -25,6 +26,21 @@ using namespace Windows::Data::Xml::Dom;
 using namespace Windows::UI::Notifications;
 
 #define WM_TRAYICON (WM_USER + 1)
+
+bool ParsePositiveSetting(std::wstring_view text, size_t& value)
+{
+    if (text.empty()) return false;
+    size_t result = 0;
+    for (const auto character : text) {
+        if (character < L'0' || character > L'9') return false;
+        const size_t digit = character - L'0';
+        if (result > ((std::numeric_limits<size_t>::max)() - digit) / 10) return false;
+        result = result * 10 + digit;
+    }
+    if (!result) return false;
+    value = result;
+    return true;
+}
 
 std::optional<SettingsWindowPlacement> LoadSettingsWindowPlacement(const std::filesystem::path& path)
 {
