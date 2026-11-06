@@ -1,136 +1,33 @@
-# MQTT Toaster
+# MTQQToaster 現行仕様
 
-A system tray resident application written in C++/WinRT that receives JSON messages from an MQTT broker such as Home Assistant (HA) and displays them as standard Windows toast notifications (with image support).
+[README](README.md) · [ドキュメント一覧](docs/README.md)
 
----
+現在の動作と制約を記述します。操作は[マニュアル](docs/user-guide.md)、内部構造は[実装構成](docs/development/architecture.md)、提案・採用理由は[判断記録](docs/decisions/README.md)を参照してください。
 
-## 1. System Overview & Architecture
+## 対応環境
 
-* **Language / Runtime**: C++23 (MSVC / C++/WinRT)
-* **Execution Mode**: System tray resident application
-* **MQTT Worker Thread**: Handles broker communication and event loop processing using `coreMQTT` over Winsock / Schannel
-* **Configuration Watcher**: Monitors changes to `config.json` using `Windows.Storage.Search.StorageFileQueryResult`.
+Windows 10 version 1809以降／Windows 11のx64向けトレイ常駐EXEです。Win32とC++/WinRTを使用し、現行ビルド・配布構成にUWP、WinUI、Windows App SDK、MSIX、IDLは含みません。
 
----
+## 通知
 
-## 2. Functional Specifications
+受信したUTF-8のJSONまたはプレーンテキストを解析し、Windows標準のトーストAPIへ渡します。本文・画像・タイトルの扱いは[ペイロード仕様](docs/reference/payload.md)を正本とします。
 
-### 2.1 Toast Notification Feature
+画像なしは`ToastText01`、画像ありは`ToastImageAndText01`を使用します。実表示はWindows側の通知設定や通知元の登録条件にも依存します。
 
-* **WinRT API**: Uses `Windows.UI.Notifications` (`ToastNotificationManager`).
-* **Template Switching**:
-* Without image: `ToastText01`
-* With image: `ToastImageAndText01`
+## MQTTとTLS
 
+MQTT 3.1.1のclean sessionで接続し、複数トピックをQoS 0で購読します。`+`／`#`に対応します。keep-aliveは60秒。切断後は5秒待って再接続・再購読し、設定更新と終了要求で待機を中断します。
 
-* **Image Display**: Each subscribed topic can have one default image. An image in the MQTT payload takes precedence; otherwise the matching topic's configured image is used. Selected files are copied beside `config.json`, and unreferenced managed images are removed after a successful save.
+`mqtt`／`mqtts`に対応します。TLS 1.2以降でWindowsの信頼ストアによる証明書チェーン、サーバー用途、有効期限、失効状態、接続先名を検証します。失効確認不能も接続失敗です。検証を無効にする設定はありません。
 
-### 2.2 MQTT Communication Feature
+購読数は1～128件、受信MQTTパケット全体は256 KiBまで。超過、不正応答、購読拒否では切断・再接続します。入力制約は[設定仕様](docs/reference/configuration.md)、待機時間とバッファ管理は[通信層](docs/mqtt-transport.md)を参照してください。
 
-* **Library**: coreMQTT v2.3.1 (MQTT 3.1.1) with Winsock / Schannel. See [MQTT transport](docs/mqtt-transport.md).
-* **Auto-reconnect**: Waits 5 seconds after failure, recreates a clean session and resubscribes. Configuration changes interrupt the wait and trigger reconnect immediately.
-* **Authentication**: Supports username and password authentication (optional).
+MQTT 5、WebSocket、永続セッション、クライアント証明書認証は対象外です。
 
-### 2.3 Configuration and Hot Reload Feature
+## 設定・常駐・ログ
 
-* **Settings UI**: The tray menu opens a native Win32 settings dialog for MQTT connection, topics, credentials, images, and logging.
-* **Configuration File**: The UI persists settings to the per-user application data directory. JSON remains an internal persistence format.
-* **Legacy Migration**: On first launch, an existing `config.json` beside the executable is copied to the new location. Otherwise `config.sample.json` is used when available.
-* **Dynamic Reload**: Immediately detects modifications and saves to `config.json` at the kernel level.
-* Automatically reconnects to MQTT if connection info (Host, Port, Topic, etc.) changes.
-* Immediately updates log output upon log level changes without restarting.
+Win32設定画面から接続・購読・画像・ログを編集し、ユーザー別の設定ファイルへ保存します。画面を閉じても常駐し、トレイの終了操作で停止します。画面配置は別ファイルへ保存します。自動起動はユーザーのログオン時の起動登録です。
 
-### 2.4 Log Output & Rotation Feature
+設定ファイルをWinRTのファイルクエリで監視します。更新検出後に読み込み、解析失敗時は共有設定を置き換えません。成功時にはMQTT再接続を要求します。JSON読込とMQTT入力検証は別処理であり、読込成功が接続成功を保証するものではありません。
 
-* **Library**: `spdlog` (Header-only / `rotating_file_sink`)
-* **Output Destination**: `Logs/app.log` in the per-user cache directory
-* **Automatic Rotation**: Rotates files and automatically deletes old logs when the set MB size limit is exceeded (preventing disk space exhaustion).
-* **Log Levels**: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `NONE`
-
-### 2.5 System Tray (Notification Area) UI
-* **Resident Display**: Displays an icon in the system tray (default is the standard Windows app icon).
-* **Right-Click Menu**
-	* Displayed as a native Win32 popup menu.
-	* "Add to Startup" Register/unregister startup
-	* "Settings..." Open the settings dialog
-	* "Exit" Exit the application
-* Closing the settings dialog does not terminate the tray application. A Win32 STA message loop owns the modeless dialog and tray icon; only Exit terminates the application.
-* Settings initially open centered in the cursor monitor's work area, sized to fit their contents (capped to the work area). Log level, maximum size and retention count share one row.
-* Normal bounds and maximized state are saved separately in `ui-state.json` on close and restored across restarts. Holding Shift while selecting Settings resets placement and size; invalid or off-screen bounds are recovered safely.
-
----
-
-## 3. Configuration File Specification (`config.json`)
-
-The application manages this file. For unpackaged builds it is stored under `%LOCALAPPDATA%\MTQQToaster`; MSIX builds use the package-managed `LocalFolder`.
-
-```json
-{
-  "mqtt_url": "mqtt://10.0.0.1:1883",
-  "mqtt_topics": [
-    { "topic": "windows/notification", "image": "topic-image-1234-5678.png" }
-  ],
-  "mqtt_user": "",
-  "mqtt_pass": "",
-  "log_level": "INFO",
-  "log_max_size_mb": 5,
-  "log_max_files": 3
-}
-
-```
-
-### Parameter Details
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `mqtt_url` | string | `"mqtt://127.0.0.1:1883"` | URL of the MQTT broker |
-| `mqtt_topics` | array | `[{"topic":"windows/notification","image":""}]` | Subscriptions and optional application-managed default images. Wildcards are supported |
-| `mqtt_user` | string | `""` | MQTT authentication username (empty string if not needed) |
-| `mqtt_pass` | string | `""` | MQTT authentication password (empty string if not needed) |
-| `log_level` | string | `"INFO"` | Log output level (`TRACE` / `DEBUG` / `INFO` / `WARN` / `ERROR` / `NONE`) |
-| `log_max_size_mb` | int | `5` | Maximum size limit per log file (MB) |
-| `log_max_files` | int | `3` | Maximum number of log file generations to retain |
-
----
-
-## 4. MQTT Payload Specification
-
-Specification for the Payload sent via `mqtt.publish` from HA, etc.
-
-### 4.1 JSON Format (Recommended)
-
-```json
-{
-  "title": "Notification Title",
-  "message": "This is the body text of the notification.",
-  "image": "snapshot.jpg"
-}
-
-```
-
-* `title` (mandatory): Title of the notification (defaults to `"MQTT Toaster"` if omitted).
-* `message` (mandatory): Body text of the notification.
-* `image` (optional): Image filename or supported application URI. Relative filenames resolve against `ToastAssets` first, then the executable directory for backward compatibility.
-
-### 4.2 Plain Text Format
-
-If mandatory parameters	are not set, it will be processed with the title set to `"MQTT Toaster"` and the message body set to the sent string.
-
----
-
-## 5. Dependencies & Build Conditions
-
-### Development Environment
-
-* **IDE / Compiler**: Visual Studio 2026 Community with Desktop development with C++ (C++23)
-* **Subsystem Setting**: `Windows (/SUBSYSTEM:WINDOWS)`
-* Bundled CMake 4.2 or later, Windows SDK and vcpkg (see `.vsconfig`)
-* `cmake -B build -S .` automatically selects vcpkg and restores the pinned manifest dependencies
-* x64 with static CRT (`/MT` for Release, `/MTd` for Debug); see [README.md](README.md) for build and test commands
-
-### External Libraries
-
-1. C++/WinRT
-2. coreMQTT v2.3.1 (local vcpkg overlay port); TLS uses OS-provided Schannel
-3. nlohmann/json
-4. spdlog
+ログレベルは実行中に更新し、ログのサイズ・保持数は起動時に適用します。保存形式、初期値、移行処理は[設定仕様](docs/reference/configuration.md)を参照してください。

@@ -5,7 +5,7 @@
 
 ## プロジェクトの前提
 
-- C++23、MSVC、Windows SDK、CMake、Ninja、vcpkgを使用する。
+- C++23、MSVC、Windows SDK、CMake、vcpkgを使用する。標準プリセットはVisual Studio generatorを使用する。
 - Win32のトレイ常駐EXEであり、C++/WinRTでWindows APIを利用する。
 - 現在の構成にはUWP、WinUI、Windows App SDK、MSIX、IDLはない。変更が必要な依頼では導入理由と影響を示す。
 - `CMakeLists.txt`、`CMakePresets.json`、`vcpkg.json`でビルドと依存関係を確認する。
@@ -17,7 +17,12 @@
 - `include/app_logic.h` / `src/app_logic.cpp`: 設定、ペイロード変換、ログ、通知、画像パス、トレイ、スタートアップ登録。
 - `tests/test_main.cpp`: GoogleTestによるペイロード変換と設定読み込みのテスト。
 - `resources/app.rc` / `resources/resource.h` / `resources/tray.ico`: Windowsリソース。
-- `config.sample.json`: 設定例。実行時の設定とログはEXEのディレクトリを基準とする。
+- `config.sample.json`: 初回取り込み用の設定例。通常の設定・ログは `%LOCALAPPDATA%\MTQQToaster` を基準とする。詳細は [設定リファレンス](docs/reference/configuration.md) を参照する。
+
+## ドキュメントの更新
+
+- [文書の構成と管理方針](docs/README.md)に従い、操作・仕様・実装・検討・検証結果を分離する。
+- 詳細は責務を持つ文書へ記載し、READMEから相対リンクでたどれるようにする。未実装の案と過去の試験結果を現行仕様に混ぜない。
 
 ## 実装の基準
 

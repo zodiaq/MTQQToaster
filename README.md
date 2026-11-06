@@ -1,136 +1,31 @@
 # MTQQToaster
 
-MTQQToaster is a simple MQTT Windows client that allows you to receive messages using the MQTT protocol.
-It is designed to be lightweight and easy to use, making it ideal for the scenarios where you want to receive notifications from Home Assistant or other MQTT brokers.
+MQTTで受信したメッセージをWindowsのトースト通知として表示する、トレイ常駐アプリです。Home Assistantなどからの通知をデスクトップで受け取れます。
 
-## Features
-- Connect to an MQTT broker
- - TLS/SSL support for secure connections
-- Subscribe to topics and receive messages
-- Pop up toast notification for incoming messages
-- Automatically start on system boot
+Windows 10 version 1809以降／Windows 11（x64）を対象とします。MQTT 3.1.1、TLS、複数トピックの購読、画像付き通知、ログオン時の自動起動に対応します。
 
-## Installation
+## はじめに
 
-### ビルド環境の準備（Windows x64）
+1. [ビルド手順](docs/development/build.md)に従ってEXEを作成します。
+2. `out/build/windows-x64/Release/MTQQToaster.exe`を起動します。
+3. トレイの「設定...」で接続先と購読トピックを保存します。
+4. [メッセージ形式](docs/reference/payload.md)に従って通知を送信します。
 
-Visual Studio 2026 Community をインストールし、**「C++によるデスクトップ開発」**を選択してください。
-推奨コンポーネントのMSVC x64/x86、Windows 11 SDK、**「Windows用C++ CMakeツール」**、**「vcpkgパッケージマネージャー」**を含めます。
-Visual Studio Installerで、このリポジトリの[.vsconfig](.vsconfig)をインポートしても準備できます。
+詳しい操作は[操作マニュアル](docs/user-guide.md)を参照してください。
 
-CMake、Ninja、vcpkg、C++/WinRTを別途インストールする必要はありません。
-ライブラリは`vcpkg.json`に従って最初のCMake構成時に自動取得されます。初回はインターネット接続とダウンロード・ビルドの時間が必要です。
-vcpkgのclone、bootstrap、`vcpkg integrate install`、`VCPKG_ROOT`の手動設定は不要です。
+## ドキュメント
 
-### ビルドとテスト
+- **使う** — [操作マニュアル](docs/user-guide.md)：初期設定、画像、自動起動、ログ、困ったとき。
+- **動作を確認する** — [現行仕様](SPECIFICATION.md)、[設定リファレンス](docs/reference/configuration.md)、[メッセージ形式](docs/reference/payload.md)。
+- **開発する** — [ビルド](docs/development/build.md)、[テスト](docs/development/testing.md)、[実装構成](docs/development/architecture.md)、[MQTT通信層](docs/mqtt-transport.md)。
+- **経緯を調べる** — [設計判断・検討記録](docs/decisions/README.md)、[検証記録](docs/validation/README.md)。
+- **文書を更新する** — [構成と管理方針](docs/README.md)。
+- **AIと開発する** — [リポジトリ指示](AGENTS.md)、[C++/WinRT開発スキル](.agents/skills/cpp-winrt-development/SKILL.md)。
 
-スタートメニューから **Developer PowerShell for VS 2026** を開き、リポジトリのディレクトリで実行します。
-VS付属のCMake（4.2以降）を利用できます。CMakeがPATHにある場合は通常のPowerShellでも同じコマンドを使えます。
+## 技術構成・ライセンス
 
-```powershell
-cmake -B build -S .
-cmake --build build --config Release --parallel
-ctest --test-dir build -C Release --output-on-failure --no-tests=error
-```
+C++23／MSVC、Win32、Windows SDKのC++/WinRT、CMake、vcpkgを使用します。MQTTはcoreMQTT、TLSはWindows標準のSchannel、JSONはnlohmann/json、ログはspdlog、単体テストはGoogleTestです。依存関係は[vcpkg.json](vcpkg.json)と[overlay port](ports/coremqtt/portfile.cmake)で管理します。
 
-EXEは`build/Release/MTQQToaster.exe`です。初回起動時にユーザー別のアプリデータフォルダーへ設定ファイルを作成します。トレイアイコンを右クリックして「設定...」を選び、MQTT接続とログ設定を入力してください。
-Debugの場合は、ビルドとテストの`Release`を`Debug`に置き換えてください。
-アプリと依存ライブラリはx64・静的CRT（Release: `/MT`、Debug: `/MTd`）でビルドします。
-対応するWindows上では追加のWindows App Runtime・.NET・VC++ Redistributableのインストールは不要です。実行モジュールは`MTQQToaster.exe`だけです（設定例と依存ライブラリのライセンス文書は別途配布）。以前のビルドフォルダーに残る`Microsoft.WindowsAppRuntime.Bootstrap.dll`は不要です。MQTTは静的リンクしたcoreMQTT v2.3.1、TLSはOS標準のSchannelを利用し、OpenSSLは不要です。Windows 10 version 1809以降／Windows 11を対象とします。
+静的CRTでビルドし、追加のWindows App Runtime、.NET、OpenSSL、VC++ Redistributableは不要です。
 
-プリセットを利用する場合（DebugとReleaseで構成・依存ライブラリを共有します）:
-
-```powershell
-cmake --preset x64-release
-cmake --build --preset x64-release --parallel
-ctest --preset x64-release
-```
-
-Debug用には`x64-debug`を指定します。プリセットのEXE出力先は`out/build/windows-x64/Release/`または`Debug/`です。
-
-対話可能なWindowsデスクトップで、UIの回帰テストを実行できます。
-
-```powershell
-$process = Start-Process .\out\build\windows-x64\Release\MTQQToaster.exe --ui-smoke-test -PassThru -Wait
-$process.ExitCode
-```
-
-ウィンドウなしの起動、設定画面の読み込み・中央配置・スクロール量・ログ3列配置、位置サイズの保存・復元・初期化、topicの追加・更新・削除、画像解除、保存・キャンセル、閉じた後の常駐を検証します。専用の一時フォルダーで設定監視による再読み込みと監視初期化中の終了も検証します。成功時の終了コードは0、失敗は非0です。診断とテスト用の位置情報はEXEと同じフォルダーの`ui-smoke.log`、`ui-smoke-state.json`へ記録します。実設定にはアクセスせず、MQTT接続やトレイ登録も行いません。設定画面が一時的に表示されるため、通常のCTestとは別に実行します。
-
-`--ui-preview`では、実設定やネットワークを使わずにサンプル設定の画面を手動確認できます。保存はメモリ内だけに適用され、画面を閉じると終了します。
-
-### 以前の構成で失敗していた場合
-
-古いtoolchainやgeneratorの設定が`build`に残っている場合は、一度だけキャッシュを作り直します。
-
-```powershell
-cmake --fresh -B build -S .
-```
-
-`cmake --version`が4.2未満の場合はVS2026のDeveloper PowerShellで実行し直してください。
-vcpkgが見つからない場合は、Visual Studio Installerで上記コンポーネントを確認します。
-独自のvcpkgを使う場合は`VCPKG_ROOT`、または`-DCMAKE_TOOLCHAIN_FILE=.../scripts/buildsystems/vcpkg.cmake`で明示できます。変更時は新しいビルドディレクトリか`--fresh`を使ってください。
-以前に設定した`VCPKG_ROOT`からVS付属vcpkgへ戻す場合は、そのシェルで`$env:VCPKG_ROOT = $null`を実行してから`cmake --fresh -B build -S .`を実行します。
-
-参考: [VS2026のC++コンポーネント](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-community?view=vs-2026)、[vcpkgのCMake連携](https://learn.microsoft.com/en-us/vcpkg/users/buildsystems/cmake-integration)、[CMakeのVS2026対応](https://cmake.org/cmake/help/latest/generator/Visual%20Studio%2018%202026.html)。
-
-## Configuration
-Use **Settings...** in the tray menu to configure the MQTT broker, subscribed topics, and logging. The application persists these values in its per-user application data directory; direct JSON editing is not required.
-
-The settings window uses native Win32 dialogs and standard controls. The tray menu uses the native Win32 menu, and the notification-area icon uses `Shell_NotifyIcon`. Closing the settings window leaves the application running; use **Exit** in the tray menu to terminate it.
-
-設定画面は初回、マウスがあるモニターの作業領域中央に、内容に合わせたサイズで表示します。位置・サイズ（最大化状態を含む）は閉じるときに設定フォルダーの`ui-state.json`へ保存し、次回起動後も復元します。**Shiftを押しながらトレイの「設定...」を選ぶと位置・サイズを初期化**します。設定画面が開いている場合もリセットできます。画面より内容が大きい場合や手動で縮小した場合はスクロールできます。ログレベル・最大サイズ・保持数は横並びです。
-
-For an unpackaged build, the files are stored under `%LOCALAPPDATA%\MTQQToaster`. An MSIX-packaged build uses the package-managed `LocalFolder` and `LocalCacheFolder`. On first launch, an existing `config.json` beside the executable is imported for compatibility.
-
-- `mqtt_url`: The URL of the MQTT broker (e.g., mqtt://broker.hivemq.com:1883)
-- `mqtt_topics`: A list of topic objects. Each topic can have one application-managed default toast image. Payload images take precedence.
-- `mqtt_user`, `mqtt_pass`: Optional username and password for the MQTT broker
-- `log_level`: Logging level (e.g., "INFO", "DEBUG", "ERROR")
-- `log_max_size_mb`, `log_max_files`: Logging configuration for file size and number of log rotation files
-
-Runtime files are separated by purpose:
-
-- `config.json`: persistent application data
-- `topic-image-*`: per-topic default images copied beside `config.json`; unreferenced managed images are removed
-- `Logs/app.log`: cache data that can be recreated
-
-## Dependencies
-
-- Visual Studio 2026 Community with Desktop development with C++ (MSVC, Windows SDK, CMake and vcpkg included)
-- Windows SDK C++/WinRT headers (for toast notifications and others)
-- Automatically restored via vcpkg: coreMQTT v2.3.1 (local overlay port), spdlog, nlohmann/json and GoogleTest
-
-## MQTT / TLS
-
-`mqtt://host[:port]`（既定1883）と`mqtts://host[:port]`（既定8883）に対応します。IPv6は`mqtts://[::1]:8883`の形式です。認証情報は専用の設定欄へ入力し、URLにユーザー名・パスワード・パスを含めないでください。
-
-MQTT 3.1.1、clean session、QoS 0購読、複数topic、`+` / `#`、60秒keep-aliveを使用します。切断時は5秒後に再接続し、すべてのtopicを再購読します。設定変更と終了では待機を中断します。topicは1～128件、MQTTパケット全体の受信上限は256 KiBです。超過・不正応答・購読拒否時には切断して再接続します。
-
-TLS 1.2以降を使用し、Windowsの信頼ストアで証明書チェーン、有効期限、失効状態、接続先名を検証します。以前の接続先名検証の無効化は廃止しました。独自CAを使う場合はそのCAへの信頼をWindows側で構成し、証明書のSANに一致するホスト名で接続してください。証明書検証を無効にする設定はありません。クライアント証明書認証・WebSocket・MQTT 5は対象外です。
-
-実装と検証範囲は[MQTT通信層](docs/mqtt-transport.md)を参照してください。ローカルTCP/TLS結合テストにはPowerShell 7.5以降を使用します（配布先には不要）。ユーザーの証明書ストアは変更しません。
-
-```powershell
-cmake --preset x64-release -DMTQQTOASTER_TRANSPORT_TESTS=ON
-cmake --build --preset x64-release --parallel
-ctest --preset x64-release
-```
-
-## License
-MTQQToaster is licensed under the MIT License. See the LICENSE file for more information.
-For the licenses of the dependencies used in this project, please refer to their respective documentation.
-
-## AI-assisted development
-
-[AGENTS.md](AGENTS.md) contains repository instructions for C++23, Win32, and C++/WinRT development.
-The repository skill [cpp-winrt-development](.agents/skills/cpp-winrt-development/SKILL.md) covers implementation, troubleshooting, and review, with references for [building and testing](.agents/skills/cpp-winrt-development/references/build-and-test.md) and [Windows runtime behavior](.agents/skills/cpp-winrt-development/references/windows-runtime.md).
-
-Codex discovers project skills in `.agents/skills/`. Invoke it explicitly with `$cpp-winrt-development`, for example:
-
-```text
-$cpp-winrt-development 設定監視の終了処理を確認して、必要な修正と検証を行って
-```
-
-Start a new session in this repository to load the new repository instructions. If the skill does not appear, restart Codex.
-See the official documentation for [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md) and [skills](https://learn.chatgpt.com/docs/build-skills).
+本プロジェクトは[MIT License](LICENSE.txt)です。配布時には依存ライブラリのライセンス文書も含めてください。

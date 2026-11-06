@@ -1,6 +1,6 @@
 # MQTT / Schannel 通信層
 
-更新日: 2026-11-07。coreMQTT v2.3.1への移行を実装。mosquitto、OpenSSL、pthreadsは依存から除去した。
+[ドキュメント一覧](README.md) · [実装構成](development/architecture.md)
 
 ## 構成
 
@@ -9,7 +9,7 @@
 - `src/main.cpp`: MTA初期化済みワーカーで設定スナップショットを取得し、接続単位で通信層を所有する。受信topicに対応する画像を付けて既存の通知処理を呼ぶ。
 - `ports/coremqtt`: vcpkg overlay port。v2.3.1とSHA-512を固定し、静的CRTでビルドする。ライセンスはMIT。FreeRTOS OS自体は導入しない。
 
-coreMQTTのmainはMQTT 5系であるため、MQTT 3.1.1対応版のv2.3.1を明示している。[公式ソース](https://github.com/FreeRTOS/coreMQTT/tree/v2.3.1)、[transport interface](https://github.com/FreeRTOS/coreMQTT/blob/v2.3.1/source/interface/transport_interface.h)
+MQTT 3.1.1対応版のv2.3.1を明示している。[公式ソース](https://github.com/FreeRTOS/coreMQTT/tree/v2.3.1)、[transport interface](https://github.com/FreeRTOS/coreMQTT/blob/v2.3.1/source/interface/transport_interface.h)
 
 ## 接続・停止
 
@@ -39,16 +39,8 @@ TLSの部分受信、複数レコード、余剰暗号データ、復号済み�
 - ユーザー名／パスワード: MQTTの各長さ上限65535 bytes。パスワード指定時はユーザー名が必要。
 - MQTT 5、WebSocket、永続セッション、クライアント証明書認証は対象外。
 
-## 検証
+## 関連資料
 
-2026-11-07のMSVC x64 Releaseビルドでは、EXEは912,896 bytes。Win32設定画面＋mosquitto/OpenSSL構成の6,093,312 bytesから約85%削減した。`dumpbin /dependents`で依存DLLがWindows標準のものだけであることを確認した。Windows App Runtime、OpenSSL DLL、VC++再頒布可能パッケージの追加インストールは不要。サイズはコンパイラーやビルド設定により変わる。
-
-Debug／Releaseとも通常テスト25件とローカル通信テスト8件が成功した（CTest上は26項目）。設定画面の編集・保存・キャンセル、ウィンドウ位置復元、設定監視のスモークテストも両構成で成功した。
-
-通常のGoogleTestでURL、UTF-8、ワイルドカード、`$SYS`、長さ上限、分割送受信、認証・購読拒否、SUBACKタイムアウト、過大パケット、keep-alive、停止、コールバック例外を検証する。
-
-`MTQQTOASTER_TRANSPORT_TESTS=ON`で追加するローカル結合テストはPowerShell 7.5以降と.NET SslStreamをテストサーバーに使用する。TCP／TLSでバイナリデータを往復し、正しい証明書の接続成功、未知CA・接続先名不一致・期限切れそれぞれのエラーコード、TLS初期化中の停止、coreMQTTでの日本語topic受信と再接続・再購読を確認する。
-
-テストクライアントはメモリ内だけの専用チェーンエンジンを使用する。OSの信頼ストアは変更しない。サーバー側はSchannelの制約上、一時鍵コンテナーを使用し、証明書破棄時に削除する。テストサーバーはループバックのみで待ち受ける。
-
-実際のユーザー環境のブローカー、独自CAの運用、プロキシ／VPN、TLS再ネゴシエーションを強制するサーバーとの相互運用は別途確認が必要。テスト用サーバーはMQTTの必要な応答のみを実装するfixtureであり、フル機能のブローカーではない。
+- [採用理由と移行の影響](decisions/0001-coremqtt-schannel.md)
+- [テスト手順](development/testing.md)
+- [移行時の検証記録](validation/2026-11-07-mqtt-transport.md)

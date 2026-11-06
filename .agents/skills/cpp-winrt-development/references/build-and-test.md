@@ -1,57 +1,15 @@
-# MSVC / CMake / vcpkg のビルドとテスト
+# MSVC / CMake / vcpkg の確認手順
 
-## リポジトリの構成
+この文書はエージェント向けの確認・診断基準を扱う。環境準備とコマンドの正本は[ビルド手順](../../../../docs/development/build.md)と[テスト手順](../../../../docs/development/testing.md)に置く。
 
-- `MTQQToasterLib`: `app_logic.cpp`を含む静的ライブラリ。
-- `MTQQToaster`: `main.cpp`と`app.rc`を含むWin32 EXE。
-- `MTQQToasterTests`: `tests/test_main.cpp`を使うGoogleTest EXE。`gtest_discover_tests`でCTestに登録する。
-- C++23が必須で、MSVC以外は`CMakeLists.txt`で拒否する。
-- vcpkgマニフェストはmosquitto、spdlog、nlohmann-json、gtestを指定し、`builtin-baseline`を固定している。更新は依頼に必要な範囲で行う。
-- プリセットは`x64-debug`と`x64-release`。Visual Studio 18 2026 generatorで`out/build/windows-x64`を共有し、build/testプリセットで構成を選ぶ。
-- プリセットなしでも`cmake -B build -S .`でVS付属vcpkgを自動検出する。`x64-windows-static`と静的CRT（Debug: /MTd、それ以外: /MT）は`project()`より前に設定する。
+## 作業前の確認
 
-## 環境を確認する
-
-Visual Studio 2026 Communityの「C++によるデスクトップ開発」を、MSVC x64/x86、Windows SDK、CMakeツール、vcpkgを含めてインストールする。必要なコンポーネントは`.vsconfig`にも記載している。
-Developer PowerShell for VS 2026でリポジトリルートから実行する。VS generatorはコンパイラを検出するため、CMakeがPATHにあれば通常のPowerShellでもよい。
-
-```powershell
-Get-Command cmake, ctest -ErrorAction Stop
-cmake --version
-cmake --list-presets=all
-```
-
-CMake 4.2以降が必要（VS2026 generator対応）。VS付属版を使えば別途導入は不要。
-`cmake/ConfigureVcpkg.cmake`は明示的なtoolchain、`VCPKG_ROOT`、VS付属vcpkgの順に選択する。VSはgeneratorの選択先、`VSINSTALLDIR`、`vswhere`から検出する。
-通常は環境変数の設定、vcpkgのclone/bootstrap/integrateは不要。初回の依存復元にはネットワーク接続が必要。
-ユーザー固有の絶対パスを共有プリセットへ書かない。Ninjaを明示する場合だけ、開発者シェルとNinjaが利用できることを確認する。
-
-## Debugの標準手順
-
-```powershell
-cmake --preset x64-debug
-cmake --build --preset x64-debug --parallel
-ctest --preset x64-debug
-```
-
-各コマンドの終了コードを確認し、失敗した段階で原因を調べる。構成失敗後に古いテストEXEを実行して成功扱いにしない。
-CTestでテストが0件の場合も検証完了にしない。
-
-Releaseを確認する場合:
-
-```powershell
-cmake --preset x64-release
-cmake --build --preset x64-release --parallel
-ctest --preset x64-release
-```
-
-プリセットなしの標準手順も確認する:
-
-```powershell
-cmake -B build -S .
-cmake --build build --config Release --parallel
-ctest --test-dir build -C Release --output-on-failure --no-tests=error
-```
+- `CMakeLists.txt`、`CMakePresets.json`、`vcpkg.json`、`vcpkg-configuration.json`を読み、対象ターゲットと依存関係を確認する。
+- 標準プリセットはVS2026 generatorと`out/build/windows-x64`を使用する。DebugとReleaseは構成・依存関係を共有する。
+- `x64-windows-static`と静的CRTの整合を保つ。ユーザー固有のパスを共有プリセットへ書かない。
+- コード変更後は該当構成をビルドし、必要なテストを実行する。リリースや依存関係に関わる変更はReleaseも確認する。
+- 構成・ビルド失敗後に古いEXEを実行して成功扱いにしない。CTestのテスト0件も検証完了としない。
+- プリセットなしの構成を変更した場合は、その手順も確認する。文書だけの変更ではアプリ起動や通信を行わない。
 
 ## 診断の順序
 
